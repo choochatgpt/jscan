@@ -1,0 +1,7 @@
+tests/tmp/
+__pycache__/
+*.pyc
+
+dist/
+node_modules/
+.netlify/

@@ -1,0 +1,36 @@
+# Netlify configuration.
+#
+# Two deploy paths use this file, and they need different things from it.
+#
+#   Locally built (tools/deploy.mjs, or dragging dist/ to Netlify Drop):
+#   dist/ already exists by the time Netlify sees it. It only needs `publish`.
+#
+#   Built on Netlify (a Git-connected site, or `netlify deploy --build`):
+#   Netlify starts from a fresh clone, and dist/ is gitignored -- it is a build
+#   artefact and does not belong in the repository. So Netlify has to run the
+#   build itself, which is what `command` is for. Without it Netlify reports
+#   "deploy directory dist does not exist", having correctly refused to publish
+#   a folder nothing had created.
+#
+# publish must never point at the project root: the root also holds tests/ and
+# the context documents, and everything under the publish directory is served
+# publicly to anyone who asks for it.
+
+[build]
+  command = "node tools/build.mjs"
+  publish = "dist"
+
+  # Pinned because the build script uses fs.cp and top-level await in an ESM
+  # module, and because "whatever Node the build image happens to default to"
+  # is not a thing to discover from a failed production deploy.
+  environment = { NODE_VERSION = "22" }
+
+# The app is self-contained and loads nothing from anywhere else, so it has no
+# reason to leak a referrer to whatever a user came from -- or to hint at the
+# URL they are on when they open an exported file. nosniff is here because the
+# host is the only party that gets to make a claim about these files.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Referrer-Policy = "no-referrer"
+    X-Content-Type-Options = "nosniff"

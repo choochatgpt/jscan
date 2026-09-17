@@ -1,0 +1,592 @@
+/* ==========================================================================
+   JScanner — mobile document / receipt cleaner
+   ========================================================================== */
+
+:root {
+  --bg:        #0d1116;
+  --bg-2:      #141a21;
+  --bg-3:      #1b232c;
+  --line:      #2a3542;
+  --line-soft: #202a34;
+  --fg:        #e8eef5;
+  --fg-dim:    #93a3b4;
+  --fg-faint:  #64748b;
+  --accent:    #4da3ff;
+  --accent-2:  #2b7fd4;
+  --danger:    #ff6b6b;
+  --ok:        #3ddc97;
+  --radius:    12px;
+  --radius-lg: 18px;
+  /* The editor fits a topbar, a stage, a panel and two button rows onto one
+     screen with no scrolling, and every one of those rows is a row the page
+     does not get. 34px is the compromise: still a real touch target, and it
+     returns 6px on each of the eight rows the editor stacks. */
+  --tap:       34px;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+/* The `hidden` attribute is how the JS shows and hides panels, sheets and the
+   busy overlay. The UA rule for it is `[hidden] { display: none }`, but author
+   styles beat UA styles regardless of specificity — so any class below that
+   sets `display` (.sheet, .busy, .page-grid, .btn) would silently defeat it and
+   the element could never be hidden. This restores it. */
+[hidden] { display: none !important; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ---------- views ---------- */
+
+/* `inset: 0` alone sizes to the *layout* viewport, which on a phone is taller
+   than the screen while the URL bar is showing: the footer lands under the
+   browser chrome and Done has to be scrolled to. `dvh` tracks the part of the
+   screen actually on show. Browsers without it drop the declaration and keep
+   `inset: 0`, which is what this did before. */
+.view {
+  position: fixed;
+  inset: 0;
+  height: 100dvh;
+  display: none;
+  flex-direction: column;
+  padding-left: var(--safe-l);
+  padding-right: var(--safe-r);
+}
+.view.is-active { display: flex; }
+
+/* ---------- topbar ---------- */
+
+.topbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: calc(var(--safe-t) + 6px) 10px 6px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.brand { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; }
+.brand h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -0.2px; }
+.brand-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: linear-gradient(140deg, var(--accent), var(--ok));
+  box-shadow: 0 0 10px rgba(77,163,255,.55);
+}
+/* The build number, beside the name on the home screen. Small and dim because
+   it answers one question — "which build am I running?" — and nothing else; it
+   is not a badge. `margin-left: auto` is not used: the brand block already
+   grows and the actions are pinned right, so the version rides along with the
+   wordmark at whatever width the number happens to need. */
+.ver { font-size: 11px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+.topbar-actions { display: flex; gap: 6px; }
+
+.topbar--edit { gap: 6px; }
+
+/* The page number with an arrow each side of it, and the page's name after.
+   A row, where this was a column of number-over-name: the pager moved up here
+   out of the footer, and arrows that flank the number they move only read as a
+   pager while they are on the same line as it.
+
+   The name is the part that gives way — `min-width: 0` and an ellipsis, because
+   it is a filename and can be anything, while the arrows and the number are
+   fixed and are what the row is for. */
+.edit-title {
+  flex: 1; min-width: 0; display: flex; align-items: center;
+  justify-content: center; gap: 5px; line-height: 1.15;
+}
+#edit-index { font-size: 13px; font-weight: 600; flex: 0 0 auto; }
+.edit-name {
+  font-size: 11px; color: var(--fg-faint); flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---------- buttons ---------- */
+
+.btn {
+  appearance: none; border: 1px solid var(--line);
+  background: var(--bg-3); color: var(--fg);
+  font: inherit; font-weight: 560; font-size: 12.5px;
+  min-height: var(--tap);
+  padding: 0 11px;
+  border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, opacity .12s, transform .06s;
+  white-space: nowrap;
+}
+.btn:active:not(:disabled) { transform: scale(.975); }
+.btn:disabled { opacity: .38; cursor: default; }
+
+.btn--primary {
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  border-color: transparent; color: #04121f; font-weight: 680;
+}
+.btn--ghost { background: var(--bg-2); }
+.btn--danger-ghost { background: var(--bg-2); color: var(--danger); border-color: #46262c; }
+
+/* The crop row's three buttons. Shorter than a `.btn` and narrower, because the
+   row also has to hold the fine-angle slider and a slider is the one control
+   here that cannot be made smaller without becoming unusable: at 320px it gets
+   what is left after these three, and every pixel they take is a degree of
+   travel it does not have.
+
+   28px rather than the 34px `--tap` floor: these sit inside the panel, not at
+   the edge of the screen, and the row above them is the one a thumb goes for.
+   The 22px of horizontal padding a full `.btn` carries buys nothing on a label
+   as short as "Left". */
+.btn--sm { min-height: 28px; padding: 0 8px; font-size: 11.5px; border-radius: 8px; }
+
+/* The fine angle and its readout, as one flex child of the crop row. The
+   slider takes the slack; the readout is fixed, so dragging the slider never
+   moves the number you are reading. Tabular figures, or "0.0°" and "-11.1°"
+   would change width as they count and jiggle the slider under the thumb. */
+.angle-row {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: 4px;
+}
+.angle-row input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.angle-row b {
+  flex: 0 0 auto; font-size: 11.5px; font-weight: 620; color: var(--fg);
+  font-variant-numeric: tabular-nums; min-width: 30px; text-align: right;
+}
+
+/* The three one-tap buttons in the footer. Tinted rather than filled: only one
+   button down there is the commit, so Done keeps the solid accent to itself and
+   these read as the recommended path to it without competing for the same
+   attention. All three carry the same tint on purpose — they differ in how much
+   they do, not in how much they matter, and Auto all is not a "more advanced"
+   Auto clean.
+
+   Four buttons share the row now, where three plus a sparkle each did before,
+   in the same 300px on the smallest phone. Both the size and the padding are
+   load-bearing. Measured at 320px with a 5px gap and Done at 9px of padding:
+   the three auto buttons are 68.75px each — the border takes 1px a side and the
+   padding 4px, so the longest label, "Auto clean", has 58.75px to sit in — and
+   at 12.5px it wants 55.8px. At 11px it wants 53.4px, which is the 5px margin
+   this is set for: the label is measured in a desktop font, the phone that runs
+   it may have a different one, and 2px of margin is not a margin.
+
+   This fails in a way nothing else here would catch. `.btn` is
+   `white-space: nowrap`, so a label that outgrows even the padding paints over
+   the *neighbouring button* — the row itself never widens and never leaves the
+   screen, so every other check in ui_flow would stay green. That is why the
+   check measures the painted label with a Range instead of trusting it to look
+   right. */
+.btn--auto {
+  background: rgba(77,163,255,.14);
+  border-color: rgba(77,163,255,.42);
+  color: #9ecbff; font-weight: 640;
+  padding: 0 4px; font-size: 11px;
+}
+.btn--grow { flex: 1; min-width: 0; }
+.btn--wide { flex: 1; }
+.btn-ico { font-size: 16px; line-height: 1; }
+
+.icon-btn {
+  appearance: none; border: 1px solid var(--line); background: var(--bg-2);
+  color: var(--fg); width: var(--tap); height: var(--tap);
+  border-radius: var(--radius); font-size: 20px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer; flex: 0 0 auto;
+}
+.icon-btn:active { background: var(--bg-3); }
+.icon-btn--sm { width: 30px; height: 30px; font-size: 15px; }
+.icon-btn:disabled { opacity: .3; }
+
+.pill {
+  background: rgba(0,0,0,.22); border-radius: 20px;
+  padding: 1px 8px; font-size: 12px; font-weight: 700;
+}
+
+/* ---------- home ---------- */
+
+.empty-state {
+  flex: 1; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center;
+  padding: 24px 28px; gap: 4px; min-height: 0;
+}
+.empty-art { color: var(--line); width: 88px; height: 88px; margin-bottom: 10px; }
+.empty-art svg { width: 100%; height: 100%; }
+.empty-state h2 { font-size: 19px; margin: 0 0 6px; font-weight: 650; }
+.empty-state p { margin: 0; color: var(--fg-dim); font-size: 14px; max-width: 34ch; }
+.empty-note { margin-top: 10px !important; font-size: 12px !important; color: var(--fg-faint) !important; }
+
+.home-spacer { flex: 1 1 auto; min-height: 0; }
+
+.page-grid {
+  flex: 1 1 auto; min-height: 0;
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 10px; padding: 12px;
+}
+.thumb {
+  position: relative; aspect-ratio: 3 / 4;
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden; cursor: pointer;
+}
+.thumb img { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.thumb:active { border-color: var(--accent); }
+.thumb-num {
+  position: absolute; left: 5px; bottom: 5px;
+  background: rgba(0,0,0,.68); border-radius: 6px;
+  padding: 1px 6px; font-size: 11px; font-weight: 650;
+}
+.thumb-del {
+  position: absolute; right: 3px; top: 3px;
+  width: 26px; height: 26px; border-radius: 50%;
+  border: none; background: rgba(0,0,0,.6); color: #fff;
+  font-size: 15px; line-height: 1; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.thumb-badge {
+  position: absolute; right: 5px; bottom: 5px;
+  background: rgba(61,220,151,.18); color: var(--ok);
+  border-radius: 6px; padding: 1px 5px; font-size: 10px; font-weight: 650;
+}
+
+/* ---------- bottom bars ---------- */
+
+.bottombar {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 10px calc(var(--safe-b) + 8px);
+  background: var(--bg); border-top: 1px solid var(--line-soft);
+}
+.bar-row { display: flex; gap: 5px; }
+
+/* The editor's footer is one row of four. The flex direction is the column it
+   already was — the buttons are grouped into .bar-row rather than being
+   stretched by a row-direction parent, because `flex: 1` on a direct child of a
+   column container is a vertical stretch, not a horizontal one.
+
+   All four share the free space in equal *content* boxes, which is why the
+   narrower padding on Done below is not a cosmetic preference: with no
+   `box-sizing` reset, flex-basis: 0 measures the content box, so every pixel of
+   padding a button carries is a pixel the whole row does not get to divide. At
+   11px of padding Done was the widest button in the row and the three labels
+   that need the room had 2px of margin between them and a spill. */
+.bottombar--edit .bar-row .btn { flex: 1; min-width: 0; }
+#btn-save { padding: 0 9px; }
+
+/* ---------- editor ---------- */
+
+/* The stage takes everything the rest of the column does not, so what governs
+   its height is how tall the panel below it wants to be. */
+/* `flex-shrink: 100` against the panel's 1 is the whole trick. Both are
+   content-sized, so when the column is a few pixels short the default split
+   takes those pixels off BOTH — and a panel 5px short of its content is a panel
+   that scrolls, which is the one thing this layout is for. Weighting the shrink
+   makes the stage give way first, all the way down to its 90px floor, and only
+   then does the panel start to scroll. */
+.stage {
+  position: relative; flex: 1 100 auto; min-height: 90px;
+  margin: 5px 10px; border-radius: var(--radius-lg);
+  background: #05070a; border: 1px solid var(--line-soft);
+  overflow: hidden; display: flex; align-items: center; justify-content: center;
+  touch-action: none;
+}
+.stage canvas { display: block; }
+#preview { max-width: 100%; max-height: 100%; }
+
+/* ---------- the zoom target ---------- */
+
+/* The canvas and the crop handles move as one. Two elements scaled by two
+   styles would drift apart at the corners — the one place they have to agree,
+   because a handle half a pixel off its corner is a crop half a pixel wrong —
+   so the whole stage contents is one element under one transform.
+
+   `transform-origin: 0 0` is load-bearing. `JS.viewToScreen` maps
+   `screen = stage * z + t` measured from the stage's own top-left; a centre
+   origin would put the box's half-extent into every one of those numbers, and
+   the arithmetic that places a crop handle would be right only by accident.
+
+   It is `position: absolute; inset: 0` rather than a flex child so that its own
+   coordinate space starts at the stage's top-left, which is what the transform
+   above assumes. The centring it used to get from the stage moves in here with
+   the canvas. */
+.stage-zoom {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  transform-origin: 0 0;
+}
+
+/* ---------- manual crop handles ---------- */
+
+/* Off until the editor has a page and a box to put them on, so the four dots
+   are never painted at the stage's top-left corner for a frame. */
+.crop-layer {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  display: none; pointer-events: none;
+}
+.crop-layer.is-on { display: block; }
+
+/* This layer is clipped by the stage, so the preview is letterboxed with a
+   margin the size of the dot: a box that reached the stage's edge would put a
+   handle on the clip line, drawn as a half-disc over a dead pixel that hit
+   testing cannot see. See `HANDLE_PAD` in `js/50-ui.js` — the margin is kept
+   there, not here, because the drag maths measures against the same box. The hit
+   circle is still wider than the margin, so it is clipped; that is fine, it is
+   invisible and the whole of it that matters is on the inside. */
+.crop-handle { pointer-events: auto; cursor: grab; touch-action: none; }
+.crop-handle:active { cursor: grabbing; }
+.crop-hit { fill: transparent; pointer-events: all; }
+.crop-dot {
+  fill: #fff; stroke: rgba(0,0,0,.55); stroke-width: 1.5;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,.5));
+}
+
+/* ---------- stage hint ---------- */
+
+/* Opaque enough to stay readable over the page rather than only over the dark
+   background behind it. `.7` and `--fg-dim` read fine against #05070a and turn
+   to grey-on-grey across a sheet of white paper, which is where the "no clear
+   page edge" message actually has to be read. */
+.stage-hint {
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  background: rgba(5,7,10,.9); color: var(--fg);
+  border: 1px solid rgba(255,255,255,.12);
+  padding: 5px 12px; border-radius: 20px; font-size: 12px;
+  pointer-events: none; opacity: 0; transition: opacity .25s;
+  max-width: 90%; text-align: center;
+}
+.stage-hint.is-on { opacity: 1; }
+
+/* Over the whole app. It used to be `absolute` inside the stage, which meant it
+   was only ever seen from the editor — and every long job (reading photos in,
+   writing the PDF out) starts on the home screen. Sized like the views, so it
+   covers exactly what they cover, and above the help sheet at z-index 60. */
+.busy {
+  position: fixed; inset: 0; height: 100dvh; z-index: 70;
+  background: rgba(5,7,10,.72);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; font-size: 13px; color: var(--fg-dim); backdrop-filter: blur(2px);
+}
+.spinner {
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 3px solid var(--line); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- panels ---------- */
+
+/* The panel is sized by its content, and the stage absorbs the difference.
+   That ordering is the whole point: every control is on screen with the page,
+   and a browser that renders a row a few pixels taller costs the page a few
+   pixels rather than pushing a control under a fold. Its content is two rows,
+   65px, so on a 375x667 phone the page gets 74.4% of the screen with nothing
+   scrolled away.
+
+   The cap is a safety valve, not the layout. It only binds when something
+   makes the panel genuinely tall — the Custom drawer open, which is eight
+   sliders and cannot be anything but a scroll — or on a screen too short to
+   hold the column at all. flex-shrink is allowed for the same reason: on a
+   landscape phone the panel gives way (and scrolls) instead of pushing the
+   footer off the bottom. 90px of stage plus a 34px topbar and a 55px footer is
+   the floor, so nothing overflows above ~200px of viewport. */
+.panel {
+  flex: 0 1 auto; min-height: 0; padding: 4px 10px 3px;
+  max-height: min(50vh, 300px);
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
+  /* Only the drawer scrolls now, and a scrollbar is invisible on a phone: this
+     is what says there are more sliders below. It matters more here than it
+     did when the whole panel scrolled, because a drawer that looks finished
+     when it is not is a control the user never finds. The two shadows appear
+     only while there is something to scroll to — the opaque `local` gradients
+     ride with the content and cover the `scroll` ones as it reaches each end. */
+  background:
+    linear-gradient(var(--bg) 40%, rgba(13,17,22,0)) top / 100% 16px no-repeat local,
+    linear-gradient(rgba(13,17,22,0), var(--bg) 60%) bottom / 100% 16px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, rgba(0,0,0,.5), rgba(0,0,0,0))
+      top / 100% 7px no-repeat,
+    radial-gradient(farthest-side at 50% 100%, rgba(0,0,0,.5), rgba(0,0,0,0))
+      bottom / 100% 7px no-repeat;
+}
+.panel-row { display: flex; gap: 6px; margin-bottom: 5px; }
+
+/* One label and its controls, on one line. This is the whole panel: "Tone:" and
+   its four chips, then "Crop:" and its four controls, and every pixel either of
+   them takes above one line is a pixel off the page below. So nothing in here
+   wraps by choice — `.chips` keeps `flex-wrap` only as the lesser of two evils,
+   a second line being better than a label painted over its neighbour — and the
+   widths are measured rather than assumed. */
+.ctl-row { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; }
+.ctl-row:last-child { margin-bottom: 0; }
+
+/* Small caps, like the group titles this row replaced: a row label is a label,
+   not a control, and at 10px it costs the row 36px instead of a chip's 60. */
+.ctl-label {
+  flex: 0 0 auto; font-size: 10px; font-weight: 700;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--fg-faint);
+  white-space: nowrap;
+}
+/* The name of a mode that has no chip of its own, in the label's place rather
+   than after it. Only Receipt needs one — `original` is what a page is before
+   anything has been done to it and says nothing worth 60px of this row — and it
+   swaps with "Tone:" rather than joining it because the pair together overflow
+   a 320px row by about 20px, which would wrap the row and cost the stage the
+   height this whole pass was for. See `syncEditorChrome`. */
+.mode-name { color: var(--fg-dim); }
+
+.hint {
+  margin: 4px 0 2px; font-size: 11.5px; color: var(--fg-faint); line-height: 1.35;
+}
+
+.slider-row {
+  display: block; margin: 0 0 5px;
+}
+.slider-label {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 11.5px; color: var(--fg-dim); margin-bottom: 1px;
+}
+.slider-label b { color: var(--fg); font-variant-numeric: tabular-nums; font-weight: 620; }
+
+input[type="range"] {
+  appearance: none; -webkit-appearance: none;
+  width: 100%; height: 20px; background: transparent; margin: 0; display: block;
+  cursor: pointer;
+}
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 5px; border-radius: 4px; background: var(--bg-3); border: 1px solid var(--line-soft);
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 20px; height: 20px; border-radius: 50%; margin-top: -8.5px;
+  background: var(--accent); border: 2px solid #0d1116;
+  box-shadow: 0 1px 5px rgba(0,0,0,.5);
+}
+input[type="range"]::-moz-range-track {
+  height: 5px; border-radius: 4px; background: var(--bg-3);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent); border: 2px solid #0d1116;
+}
+
+/* ---------- chips ---------- */
+
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.chip {
+  appearance: none; border: 1px solid var(--line); background: var(--bg-2);
+  color: var(--fg-dim); font: inherit; font-size: 11.5px; font-weight: 570;
+  padding: 3px 9px; border-radius: 20px; cursor: pointer; white-space: nowrap;
+}
+.chip.is-active {
+  background: rgba(77,163,255,.15); border-color: var(--accent); color: var(--accent);
+}
+
+/* The tone row is the one place the pills have to be tighter than this: at
+   320px it shares 198.0px with a "Tone:" label and the Custom chip that opens
+   the drawer. Scoped to the row rather than changed on `.chip`, because the
+   export sheet's three format chips have room to spare and read better with it.
+
+   3px of gap and 6px of side padding is what four chips fitted in. The Receipt
+   chip made five, and these are the measured numbers for getting them back on
+   one line: five chips at gap 3 / padding 6 need 231.0px against the 198.0px
+   the row has at 320px, so they wrap to a 52.3px row instead of a 24.7px one
+   and the stage drops from 70.0% of a 320x568 screen to 65.1%. With the shorter
+   "Colour" chip and these two values the row is left with 12.3px to spare at
+   that width, and more at every other one.
+
+   The slack is the point, not the fit. A wrap is a cliff rather than a slope,
+   so a combination that fits by a pixel or two is not a fix; it is a fix that
+   the next font fallback undoes, and it undoes it into a 27.6px regression.
+   Padding was tried at 5px and 4px first and neither was enough on its own --
+   at 4px with the full "Auto colour" label the chips still needed 215.0px.
+   Measured, per width, by tests/tmp/chip_row.py and tests/tmp/chip_slack.py.
+
+   The chips take their content width and are not allowed to grow — the Custom
+   chip sits just after them rather than being pushed to the far edge, because a
+   gap that opens and closes as the Sharpen label counts up is a row that
+   twitches while you tap it. `margin-bottom: 0` because `.chips` is normally a
+   block that owns its own spacing and here it is a flex child in a row that
+   owns it instead. */
+#mode-chips { gap: 2px; margin-bottom: 0; flex: 0 1 auto; }
+#mode-chips .chip { padding: 3px 4px; }
+
+/* ---------- the Custom drawer ---------- */
+
+/* Eight sliders and a Reset tone, behind the Custom chip. It cannot be anything
+   but a scroll: 8 x 43px is more than the whole panel. That is what the cap
+   above is for, and it is why this is the only thing in the editor behind a
+   tap.
+
+   A `hidden` div and not a `<details>`, which is what it used to be. A
+   `<details>` opens *inside* its own element, so a summary in this row would
+   have opened the drawer inside the chip — and a closed `<details>` is laid out
+   but unpainted, which is a thing the layout checks have to work around and a
+   thing that cannot be measured honestly. `[hidden]` is display:none, so shut
+   means gone. */
+.tune { border-top: 1px solid var(--line-soft); padding-top: 5px; }
+.tune > .slider-row:last-of-type { margin-bottom: 5px; }
+
+/* ---------- sheets ---------- */
+
+.sheet { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-end; }
+.sheet-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.6); }
+.sheet-body {
+  position: relative; width: 100%;
+  background: var(--bg-2);
+  border-top: 1px solid var(--line);
+  border-radius: 20px 20px 0 0;
+  padding: 8px 16px calc(var(--safe-b) + 18px);
+  max-height: 88vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  animation: sheet-up .22s cubic-bezier(.22,.9,.3,1);
+}
+@keyframes sheet-up { from { transform: translateY(100%); } }
+.sheet-body--compact { padding-bottom: calc(var(--safe-b) + 8px); }
+.sheet-handle {
+  width: 38px; height: 4px; border-radius: 3px; background: var(--line);
+  margin: 4px auto 12px;
+}
+.sheet-body h2 { font-size: 17px; margin: 0 0 14px; font-weight: 650; }
+.sheet-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+.field { margin-bottom: 14px; }
+.field-label { display: block; font-size: 12.5px; color: var(--fg-dim); margin-bottom: 7px; }
+
+.menu-item {
+  appearance: none; width: 100%; text-align: left;
+  background: transparent; border: none; border-bottom: 1px solid var(--line-soft);
+  color: var(--fg); font: inherit; font-size: 15px;
+  padding: 15px 4px; cursor: pointer;
+}
+.menu-item:last-child { border-bottom: none; }
+.menu-item:active { background: var(--bg-3); }
+.menu-item--danger { color: var(--danger); }
+
+.help-list { margin: 0; padding-left: 20px; color: var(--fg-dim); font-size: 14px; }
+.help-list li { margin-bottom: 10px; }
+.help-list b { color: var(--fg); }
+
+.hidden-input {
+  position: absolute; width: 1px; height: 1px; opacity: 0;
+  pointer-events: none; left: -9999px;
+}
+
+/* ---------- landscape ---------- */
+
+/* A phone on its side has ~390px of height for a topbar, a stage, a panel and
+   two footer rows. The stage floor gives way first; the footer never does, or
+   Done is off the screen again. */
+@media (orientation: landscape) and (max-height: 560px) {
+  .panel { max-height: 30vh; }
+  .stage { min-height: 96px; }
+  .empty-art { width: 60px; height: 60px; }
+}

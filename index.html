@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101418">
+<meta name="color-scheme" content="dark">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>JScanner</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<!-- ============================ HOME ============================ -->
+<section id="view-home" class="view is-active">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <h1>JScanner</h1>
+      <!-- The build, on the first screen, filled in from JS.VERSION at boot.
+           Empty here on purpose: a version typed into the markup is a second
+           copy that goes stale silently, which is worse than no version at all.
+           See JS.VERSION. -->
+      <span id="app-version" class="ver"></span>
+    </div>
+    <div class="topbar-actions">
+      <button id="btn-help" class="icon-btn" type="button" aria-label="Help">?</button>
+    </div>
+  </header>
+
+  <div id="empty-state" class="empty-state">
+    <div class="empty-art" aria-hidden="true">
+      <svg viewBox="0 0 96 96" fill="none" stroke="currentColor" stroke-width="3"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 12h40l16 16v56a4 4 0 0 1-4 4H20a4 4 0 0 1-4-4V16a4 4 0 0 1 4-4z"/>
+        <path d="M60 12v16h16"/>
+        <path d="M30 44h32M30 56h32M30 68h20"/>
+      </svg>
+    </div>
+    <h2>Scan a document or receipt</h2>
+    <p>Pick photos from your gallery, then straighten, crop and clean them so the text is sharp and readable &mdash; by you or by OCR.</p>
+    <p class="empty-note">Everything runs on this device. Nothing is uploaded anywhere.</p>
+  </div>
+
+  <div id="page-grid" class="page-grid" hidden></div>
+
+  <div class="home-spacer"></div>
+
+  <footer class="bottombar bottombar--home">
+    <div class="bar-row">
+      <button id="btn-add" class="btn btn--primary" type="button">
+        <span class="btn-ico" aria-hidden="true">＋</span> Add photos
+      </button>
+      <button id="btn-camera" class="btn btn--ghost" type="button">
+        <span class="btn-ico" aria-hidden="true">◎</span> Camera
+      </button>
+    </div>
+    <div class="bar-row">
+      <button id="btn-export" class="btn btn--wide" type="button" disabled>
+        Export <span id="export-count" class="pill">0</span>
+      </button>
+      <button id="btn-clear" class="btn btn--danger-ghost" type="button" disabled>Clear</button>
+    </div>
+  </footer>
+</section>
+
+<!-- ============================ EDITOR ============================ -->
+<section id="view-edit" class="view">
+  <header class="topbar topbar--edit">
+    <button id="btn-back" class="icon-btn" type="button" aria-label="Back">‹</button>
+    <!-- The pager lives up here, around the page number it moves.
+         It was a row of its own in the footer — arrows either side of Done —
+         and the two icon buttons plus Done plus the three auto buttons cannot
+         share one 300px line on the smallest phone. Something had to move, and
+         the page position belongs with the page indicator: "2 / 5" with an
+         arrow each side of it says what it does without a label, and the footer
+         is left to the four buttons that change the page rather than move
+         between pages. -->
+    <div class="edit-title">
+      <button id="btn-prev" class="icon-btn icon-btn--sm" type="button" aria-label="Previous page">‹</button>
+      <span id="edit-index">1 / 1</span>
+      <button id="btn-next" class="icon-btn icon-btn--sm" type="button" aria-label="Next page">›</button>
+      <span id="edit-name" class="edit-name"></span>
+    </div>
+    <button id="btn-page-menu" class="icon-btn" type="button" aria-label="Page options">⋯</button>
+  </header>
+
+  <!-- The stage shows the finished page and nothing else: the same pixels the
+       export will write. Straightening by 90° is a button; the crop is dragged
+       by its corners, and there is nothing else on the stage to drag. -->
+  <div id="stage" class="stage">
+    <!-- The canvas and the crop handles are wrapped together so that pinch zoom
+         is *one* transform: two elements scaled by two styles would drift apart
+         at the corners, which is exactly where a crop handle has to be exact.
+         The hint stays outside it — a message about the page should not be
+         magnified with the page. -->
+    <div id="stage-zoom" class="stage-zoom">
+      <canvas id="preview"></canvas>
+
+      <!-- The manual crop: a handle on each corner of the page and one on the
+           middle of each side, sitting on the box the preview is drawn in. The
+           box *is* the crop, so its corners are where the page's corners are and
+           there is no rectangle to draw — the edge of the picture already is the
+           edge of the crop.
+
+           The four edge handles move a whole side at once, which is the fit
+           Auto crop is most likely to get wrong on a page lying on a shadow:
+           the side is one drag rather than two corners that have to agree.
+
+           An SVG, not a canvas: the stage is allowed exactly one canvas and the
+           checks that watch the stage count on it. Each handle carries an
+           invisible hit circle — 17px of dot is the right size to aim at and the
+           wrong size to hit with a thumb, so what gets touched is 52px across and
+           what gets drawn is not. Zoom scales the hit circle with everything
+           else, so a handle grabbed at 2x is a 104px target.
+
+           Order is clockwise from the top-left corner, and the code that places
+           and drags them reads the same order out of `HANDLES` in js/50-ui.js:
+           0 top-left, 1 top, 2 top-right, 3 right, 4 bottom-right, 5 bottom,
+           6 bottom-left, 7 left. -->
+      <svg id="crop-layer" class="crop-layer" aria-hidden="true">
+        <g class="crop-handle"><circle class="crop-hit" r="26"/><circle class="crop-dot" r="8.5"/></g>
+        <g class="crop-handle"><circle class="crop-hit" r="26"/><circle class="crop-dot" r="8.5"/></g>
+        <g class="crop-handle"><circle class="crop-hit" r="26"/><circle class="crop-dot" r="8.5"/></g>
+        <g class="crop-handle"><circle class="crop-hit" r="26"/><circle class="crop-dot" r="8.5"/></g>
+        <g class="crop-handle"><circle class="crop-hit" r="26"/><circle class="crop-dot" r="8.5"/></g>
+        <g class="crop-handle"><circle class="crop-hit" r="26"/><circle class="crop-dot" r="8.5"/></g>
+        <g class="crop-handle"><circle class="crop-hit" r="26"/><circle class="crop-dot" r="8.5"/></g>
+        <g class="crop-handle"><circle class="crop-hit" r="26"/><circle class="crop-dot" r="8.5"/></g>
+      </svg>
+    </div>
+
+    <div id="stage-hint" class="stage-hint"></div>
+  </div>
+
+  <!-- Two labelled rows, one line each. This is the whole panel, and its height
+       is the stage's height — which is why each row is a *line* rather than a
+       titled group with controls under it. Measured on a 375x667 phone: the two
+       titled groups this replaced were 194px and left the page at 49.0%; the two
+       lines are 65px and leave it at 74.4%. The rest of that gain is the footer,
+       which went from two rows to one when Done moved up beside the autos.
+
+       Nothing in here is behind a fold. Every manual control the editor has is
+       on screen with the page, and the panel is sized by its own content, so
+       what gives way is the stage below rather than the panel above: a browser
+       that renders a row a few pixels taller costs the page a few pixels instead
+       of hiding a control. The cap that survives is a safety valve for short
+       screens, not the layout.
+
+       "Tone:" comes first because the tone chips are the one input the pinned
+       Auto clean acts on, and a button that promises to clean the page while
+       hiding which way it will do it is the worse of the two lies.
+
+       Of the four controls in the tone row, three are ways of looking at the
+       page and one is not: Sharpen rescues a blurry photo without changing the
+       look at all, and Custom opens the sliders. Both carry no `data-mode`, so
+       the row's own code cannot mistake either for a mode. -->
+  <div id="panel" class="panel">
+    <div class="ctl-row" id="tone-row">
+      <span class="ctl-label"><span id="tone-label">Tone:</span><span id="mode-name" class="mode-name"></span></span>
+      <div class="chips" id="mode-chips">
+        <!-- "Colour", not "Auto colour", and the row is why. The chip row shares
+             320px with a "Tone:" label and the Custom chip, and at that width it
+             has 198.0px to lay chips in. Four chips spelling the modes out in
+             full need 231.0px and wrap to a second line, which costs the stage
+             27.6px -- 65.1% of the screen instead of 70.0%. Spelling two of them
+             the way the row already spells B/W for Black & white buys it back
+             with room to spare. The mode is still called Auto colour everywhere
+             it is named in prose, including JS.MODE_LABELS; a chip in a row of
+             chips is an abbreviation, which is what B/W has always been. -->
+        <button class="chip" data-mode="auto" type="button">Colour</button>
+        <!-- Receipt had no chip for a while, because Auto all read the page's
+             shape and picked it. Auto all no longer does that, so the chip is
+             the only way in and it is back. -->
+        <button class="chip" data-mode="receipt" type="button">Receipt</button>
+        <!-- Not a mode: tapping it sharpens without changing the look, and
+             tapping it four times puts back what the look asked for. Its label
+             carries the step. It sits in this row because the row it replaced —
+             the Greyscale chip — was here, and because the one thing a blurry
+             photo needs should not be three taps down inside a drawer. -->
+        <button id="chip-sharpen" class="chip" type="button" aria-pressed="false">Sharpen</button>
+        <button class="chip" data-mode="bw" type="button">B/W</button>
+      </div>
+      <!-- The drawer's handle, and the only control here that opens anything.
+           It is a button and not a <details>/<summary> because it has to sit
+           inline in this row: a summary's drawer opens *inside* its own element,
+           which in a flex row means inside the chip. -->
+      <button id="chip-custom" class="chip" type="button"
+              aria-expanded="false" aria-controls="tune">Custom</button>
+    </div>
+
+    <div class="tune" id="tune" hidden>
+      <label class="slider-row">
+        <span class="slider-label">Brightness <b id="val-bright">0</b></span>
+        <input id="in-bright" type="range" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider-row">
+        <span class="slider-label">Contrast <b id="val-contrast">0</b></span>
+        <input id="in-contrast" type="range" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider-row">
+        <span class="slider-label">Colour strength <b id="val-wb">70%</b></span>
+        <input id="in-wb" type="range" min="0" max="100" step="1" value="70">
+      </label>
+      <label class="slider-row">
+        <span class="slider-label">Saturation <b id="val-sat">0</b></span>
+        <input id="in-sat" type="range" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider-row">
+        <span class="slider-label">Warmth <b id="val-warmth">0</b></span>
+        <input id="in-warmth" type="range" min="-100" max="100" step="1" value="0">
+      </label>
+      <label class="slider-row">
+        <span class="slider-label">Shadow removal <b id="val-flat">85%</b></span>
+        <input id="in-flat" type="range" min="0" max="100" step="1" value="85">
+      </label>
+      <label class="slider-row">
+        <span class="slider-label">Text weight <b id="val-thr">0</b></span>
+        <input id="in-thr" type="range" min="-40" max="40" step="1" value="0">
+      </label>
+      <label class="slider-row">
+        <span class="slider-label">Sharpness <b id="val-sharp">30</b></span>
+        <input id="in-sharp" type="range" min="0" max="100" step="1" value="30">
+      </label>
+      <div class="panel-row">
+        <button id="btn-reset-adj" class="btn btn--ghost btn--grow" type="button">Reset tone</button>
+      </div>
+    </div>
+
+    <div class="ctl-row" id="crop-row">
+      <span class="ctl-label">Crop:</span>
+      <!-- Glyph-free on purpose. "⟲ Left" costs 13px off each rotate button,
+           and the slider is what pays for it: measured on a 320px phone the
+           slider gets 68px without the glyphs and 39px with them, and ±15° over
+           39px is a slider you cannot set. The aria-labels still say what the
+           buttons do, and "Left" next to a Crop label reads as the direction it
+           turns without needing the arrow drawn. -->
+      <button id="btn-rot-l" class="btn btn--ghost btn--sm" type="button" aria-label="Rotate left 90 degrees">Left</button>
+      <button id="btn-rot-r" class="btn btn--ghost btn--sm" type="button" aria-label="Rotate right 90 degrees">Right</button>
+      <!-- The fine angle, as one row: the slider takes what is left after the
+           three buttons and gives it to the only control here with a range. -->
+      <label class="angle-row">
+        <input id="in-fine" type="range" min="-15" max="15" step="0.1" value="0"
+               aria-label="Fine angle">
+        <b id="val-fine">0.0°</b>
+      </label>
+      <button id="btn-undo-all" class="btn btn--ghost btn--sm" type="button">Undo all</button>
+    </div>
+  </div>
+
+  <!-- One row: the three one-tap defaults and Done. Nothing here scrolls, so the
+       buttons the eye goes looking for are always where they were left.
+
+       It used to be two rows, with Done on the second between the pager arrows,
+       and the 34px that cost is the stage's — the whole point of this pass. Four
+       buttons now share a 300px line on the smallest phone, and none of them
+       stretches to fill it: at 320px each is 72px, the longest label "Auto clean"
+       wants 62px, and what is left over is the 5px of padding each side. Half a
+       character more and it would start painting over its neighbour, because
+       `.btn` is `white-space: nowrap` — it spills rather than wraps or widens
+       the row.
+
+       That is why ui_flow measures the painted label against the button's own
+       box rather than trusting it to look right. It measures it with a Range,
+       not `scrollWidth`: a centred overflow is invisible to `scrollWidth` in the
+       inline-start direction, and the first version of that check passed a row
+       that had been deliberately broken.
+
+       The ✨ is gone from all three. It was four characters of a 72px button
+       spent on a decoration that says "magic" about the one thing on this screen
+       that is not magic, and dropping it is what makes four fit where three did. -->
+  <footer class="bottombar bottombar--edit">
+    <div class="bar-row">
+      <button id="btn-auto" class="btn btn--auto btn--grow" type="button">Auto crop</button>
+      <button id="btn-all" class="btn btn--auto btn--grow" type="button">Auto all</button>
+      <button id="btn-magic" class="btn btn--auto btn--grow" type="button">Auto clean</button>
+      <button id="btn-save" class="btn btn--primary btn--grow" type="button">Done</button>
+    </div>
+  </footer>
+</section>
+
+<!-- ============================ EXPORT SHEET ============================ -->
+<div id="sheet-export" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close-sheet></div>
+  <div class="sheet-body">
+    <div class="sheet-handle"></div>
+    <h2>Export</h2>
+
+    <div class="field">
+      <span class="field-label">Format</span>
+      <div class="chips" id="fmt-chips">
+        <button class="chip is-active" data-fmt="pdf" type="button">PDF (all pages)</button>
+        <button class="chip" data-fmt="jpeg" type="button">JPEG (each page)</button>
+        <button class="chip" data-fmt="png" type="button">PNG (each page)</button>
+      </div>
+    </div>
+
+    <label class="slider-row" id="quality-row">
+      <span class="slider-label">JPEG quality <b id="val-quality">90%</b></span>
+      <input id="in-quality" type="range" min="40" max="100" step="1" value="90">
+    </label>
+
+    <label class="slider-row">
+      <span class="slider-label">Max long edge <b id="val-maxdim">2400 px</b></span>
+      <input id="in-maxdim" type="range" min="800" max="4000" step="100" value="2400">
+    </label>
+
+    <p class="hint" id="export-summary"></p>
+
+    <div class="sheet-actions">
+      <button id="btn-download" class="btn btn--primary btn--wide" type="button">Download</button>
+      <button id="btn-share" class="btn btn--ghost btn--wide" type="button" hidden>Share…</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ PAGE MENU ============================ -->
+<div id="sheet-menu" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close-sheet></div>
+  <div class="sheet-body sheet-body--compact">
+    <div class="sheet-handle"></div>
+    <button class="menu-item" data-act="rotate-l" type="button">⟲ Rotate left</button>
+    <button class="menu-item" data-act="rotate-r" type="button">⟳ Rotate right</button>
+    <button class="menu-item" data-act="duplicate" type="button">Duplicate page</button>
+    <button class="menu-item" data-act="apply-all" type="button">Apply this page's settings to all</button>
+    <button class="menu-item menu-item--danger" data-act="delete" type="button">Delete page</button>
+  </div>
+</div>
+
+<!-- ============================ HELP ============================ -->
+<div id="sheet-help" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close-sheet></div>
+  <div class="sheet-body">
+    <div class="sheet-handle"></div>
+    <h2>How to use</h2>
+    <ol class="help-list">
+      <li><b>Add photos</b> from your gallery, or shoot with <b>Camera</b>. You can add several at once.</li>
+      <li><b>Auto all</b> does the whole job in one tap: finds the page edges, straightens the tilt, and cleans the result. Use it unless you want to set the crop and the look yourself.</li>
+      <li><b>Auto crop</b> only finds the page edges and the tilt, leaving the look as it is. If it misses the page, drag the dots on the preview to set the crop yourself — a dot on each corner, and one on the middle of each side to move that whole side at once. The picture zooms in on the dot as you take hold of it, so you can land it on the printed edge — or rotate with <b>Left</b> / <b>Right</b> and try again, or set <b>Fine angle</b> by hand. <b>Undo all</b> puts the page back to the photo you imported — crop, straighten, rotation and look.</li>
+      <li><b>Auto clean</b> only sets the look, leaving the crop as it is. Pick one yourself instead if you prefer. For OCR of typed text, <b>B/W</b> gives the crispest result. <b>Shadow removal</b>, under <b>Custom</b>, lifts a shadow off the paper in every mode. If the text is blurry, <b>Sharpen</b> in the same row taps up through three steps — a fourth tap puts back what the look asked for — and it stacks on top of whichever look you picked.</li>
+      <li>The preview always shows the finished page, exactly as it will be exported. <b>Pinch</b> it to zoom in and check that small print is legible, and drag with two fingers to move around; it springs back to fit when you change pages.</li>
+      <li><b>Done</b> bakes the result into the page. <b>Export</b> to a multi-page PDF or to individual images.</li>
+    </ol>
+    <p class="hint">Tip: fill the frame with the document, avoid hard shadows across the page, and keep the camera roughly parallel to the paper.</p>
+    <div class="sheet-actions">
+      <button class="btn btn--primary btn--wide" data-close-sheet type="button">Got it</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================ PROGRESS ============================ -->
+<!-- Over the whole app, not over the stage it used to sit in. Every long job
+     this app has starts on the home screen — reading fifteen photos in, then
+     writing the PDF out — and a progress overlay inside the editor is invisible
+     from there, which left a long import with no sign of life at all. It comes
+     after both views so it paints above them, and the counter in it counts:
+     "Loading 3 of 15…", because "it is working" and "it is working on 3 of 15"
+     are different amounts of reassurance. -->
+<div id="busy" class="busy" hidden>
+  <div class="spinner"></div>
+  <span id="busy-text">Working…</span>
+</div>
+
+<!-- ============================ FILE INPUTS ============================ -->
+<input id="file-gallery" class="hidden-input" type="file" accept="image/*" multiple>
+<input id="file-camera" class="hidden-input" type="file" accept="image/*" capture="environment">
+
+<script src="js/00-utils.js"></script>
+<script src="js/10-imageops.js"></script>
+<script src="js/20-detect.js"></script>
+<script src="js/30-pipeline.js"></script>
+<script src="js/40-export.js"></script>
+<script src="js/50-ui.js"></script>
+<script src="js/60-init.js"></script>
+</body>
+</html>
