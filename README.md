@@ -16,6 +16,8 @@ telling two builds apart, not for promising anything.
 
 ### What each build changed
 
+- **1.7.1** — Maintenance release for the move to GitHub Pages. No scanner/detector algorithm change; the running build number is bumped so the GitHub-hosted release is easy to distinguish from 1.7.0.
+
 - **1.7.0** — One reported photo, one change to the detector, and one thing
   measured and dropped. **A taxi receipt was cropped through its right side**,
   taking the amounts column with it: the detector's single threshold is a split
