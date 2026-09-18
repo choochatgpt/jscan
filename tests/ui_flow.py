@@ -232,7 +232,7 @@ def detector_without_guards():
 # The guards, as literal source text: an edit that renames or reflows one of
 # them fails loudly instead of leaving a check that quietly proves nothing.
 GUARD_CUTS = [
-    (r"\n    if \(Math\.abs\(bg - thr\) < delta && bgSd >= delta\) return null;\n", "\n"),
+    (r"\n    if \(Math\.abs\(bg - thr\) < delta && bgSd >= delta\) \{", "\n    if (false && Math.abs(bg - thr) < delta && bgSd >= delta) {"),
     (r"\n    if \(best === -LIMIT \|\| best === LIMIT\) return 0;\n", "\n"),
     (r"\n    if \(minScore > bestScore \* 0\.25\) return 0;\n", "\n"),
     (r"\n    var centre = best;\n", "\n"),
@@ -2168,6 +2168,9 @@ def main():
 
         page.wait_for_function("document.getElementById('busy').hidden", timeout=10000)
         after = page.evaluate(STATE)
+        rep.check("Auto all preserves the selected tone mode",
+                  after["mode"] == before["mode"],
+                  "before %s after %s" % (before["mode"], after["mode"]))
         q = after["corners"]
         if q:
             print("        after:  mode %s thr %s sharp %s  crop x %.3f..%.3f y %.3f..%.3f"
@@ -2955,11 +2958,19 @@ def main():
         print("        hint: %r  corners %s  fine %.2f"
               % (found_hint, fresh["corners"], fresh["fine"]))
 
-        rep.check("it says it found no page edge rather than claiming success",
-                  "No clear page edge" in found_hint, found_hint)
-        rep.check("the crop is left as the whole frame", fresh["corners"] is None,
-                  fresh["corners"])
-        rep.check("and no rotation is invented either", abs(fresh["fine"]) < 0.01,
+        rep.check("the mixed-border receipt is recovered rather than refused",
+                  "Edges found" in found_hint and fresh["corners"] is not None,
+                  "%s / %s" % (found_hint, fresh["corners"]))
+        if fresh["corners"]:
+            xs = [p["x"] for p in fresh["corners"]]
+            ys = [p["y"] for p in fresh["corners"]]
+            rep.check("the recovery lands on the receipt strip, not the hand",
+                      min(xs) > 0.20 and max(xs) < 0.80 and
+                      min(ys) < 0.20 and max(ys) > 0.80,
+                      "x %.3f..%.3f y %.3f..%.3f"
+                      % (min(xs), max(xs), min(ys), max(ys)))
+        rep.check("and the recovery invents no large rotation",
+                  abs(fresh["fine"]) < 2.0,
                   "fine %.2f deg" % fresh["fine"])
 
         # The falsifier. Put the pre-guard detector back into the page and ask it

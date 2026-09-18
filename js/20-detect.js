@@ -1006,6 +1006,141 @@
    * separate so a probe can see the losing candidate and the two scores rather
    * than only the winner.
    */
+
+  /*
+   * Guarded recovery for a long pale receipt across a mixed border (hand on
+   * one side, pale counter on the other). The ordinary detector still runs
+   * first. This path is entered only where the border-reference guard would
+   * otherwise refuse the frame.
+   *
+   * It looks for two long signed brightness seams, then the two end seams
+   * between them. The result must be a receipt-like strip and at least three
+   * final sides must still have paper brighter inside than outside. This keeps
+   * the old safety property: a large shaded hand cannot win merely by being the
+   * biggest connected region.
+   */
+  function ambiguousReceiptQuad(gray, w, h) {
+    var maxD = Math.max(w, h);
+    var work = JS.blurGray(gray, w, h, Math.max(1, Math.round(maxD / 180)));
+    var probe = JS.clamp(Math.round(maxD / 90), 3, 6);
+
+    function sample(x, y) { return sampleAt(work, w, h, x, y); }
+    function vstep(x, y, left) {
+      var a = sample(x - probe, y), b = sample(x + probe, y);
+      return left ? b - a : a - b;
+    }
+    function hstep(x, y, top) {
+      var a = sample(x, y - probe), b = sample(x, y + probe);
+      return top ? b - a : a - b;
+    }
+    function robustMean(vals) {
+      // A receipt edge must persist down most of the strip. Taking a high
+      // quantile rather than the mean of the best samples prevents one strong
+      // hand/shadow seam from masquerading as a page side.
+      vals.sort(function(a,b){ return b-a; });
+      return vals[Math.min(vals.length - 1, Math.floor(vals.length * 0.60))];
+    }
+    function verticalScore(x, left) {
+      var vals = [];
+      for (var i=0; i<31; i++) {
+        var y = Math.round(h * (0.06 + 0.88*i/30));
+        vals.push(vstep(x, y, left));
+      }
+      var core = robustMean(vals);
+      // A hand/counter boundary can be stronger than the receipt side but it
+      // continues through the photograph's top and bottom. A paper side usually
+      // stops at the receipt ends. Penalise that full-frame seam so the paired
+      // search does not lock onto the background join.
+      var outside = Math.max(
+        0,
+        vstep(x, Math.max(probe, Math.round(h * 0.02)), left),
+        vstep(x, Math.min(h - 1 - probe, Math.round(h * 0.98)), left)
+      );
+      return core - 0.75 * outside;
+    }
+
+    var L=[], R=[], x;
+    for (x=Math.round(w*0.04); x<=Math.round(w*0.60); x++)
+      L.push({x:x,s:verticalScore(x,true)});
+    for (x=Math.round(w*0.40); x<=Math.round(w*0.96); x++)
+      R.push({x:x,s:verticalScore(x,false)});
+
+    var pair=null, best=-Infinity;
+    for (var li=0; li<L.length; li++) for (var ri=0; ri<R.length; ri++) {
+      var width=R[ri].x-L[li].x;
+      if (width<w*0.12 || width>w*0.45) continue;
+      var floor=Math.min(L[li].s,R[ri].s);
+      if (floor<3) continue;
+      var score=floor*2+L[li].s+R[ri].s;
+      if (score>best) { best=score; pair={l:L[li].x,r:R[ri].x,edge:floor}; }
+    }
+    if (!pair) return null;
+
+    function endScore(y, top) {
+      var vals=[];
+      for (var i=0; i<21; i++) {
+        var x=Math.round(pair.l+(pair.r-pair.l)*(0.08+0.84*i/20));
+        vals.push(hstep(x,y,top));
+      }
+      return robustMean(vals);
+    }
+    function bestEnd(top) {
+      var lo=top?Math.round(h*0.015):Math.round(h*0.55);
+      var hi=top?Math.round(h*0.45):Math.round(h*0.985);
+      var by=-1, bs=-Infinity;
+      for (var y=lo; y<=hi; y++) {
+        var s=endScore(y,top);
+        if (s>bs) { bs=s; by=y; }
+      }
+      return {y:by,s:bs};
+    }
+
+    var top=bestEnd(true), bot=bestEnd(false);
+    // Interior print/table rules can be stronger than the real receipt end.
+    // On this long-slip fallback, trust an end only near the corresponding
+    // outer end. Otherwise follow the already-persistent side seams to frame.
+    var topOK=top.s>=2.5 && top.y<=h*0.20;
+    var botOK=bot.s>=2.5 && bot.y>=h*0.80;
+    if (!topOK) top={y:0,s:0};
+    if (!botOK) bot={y:h-1,s:0};
+    if (!topOK && !botOK && pair.edge<4.5) return null;
+    if (bot.y-top.y<h*0.60) return null;
+
+    var q=[
+      {x:pair.l,y:top.y},{x:pair.r,y:top.y},
+      {x:pair.r,y:bot.y},{x:pair.l,y:bot.y}
+    ];
+    var area=JS.quadArea(q);
+    if (area<w*h*0.08 || area>w*h*0.82) return null;
+    var aw=pair.r-pair.l, ah=bot.y-top.y;
+    if (Math.max(aw,ah)/Math.max(1,Math.min(aw,ah))<1.80) return null;
+
+    var steps=[];
+    for (var side=0; side<4; side++) {
+      var f=sideFrame(q,side), sum=0, n=0;
+      for (var k=4; k<=16; k++) {
+        sum += sideStep(work,w,h,f.a,f.b,f.nx,f.ny,k/20); n++;
+      }
+      steps.push(sum/n);
+    }
+    var positive=0, total=0, minStep=Infinity;
+    for (var j=0; j<steps.length; j++) {
+      if (steps[j]>=2.5) positive++;
+      total+=steps[j]; minStep=Math.min(minStep,steps[j]);
+    }
+    if (positive<3 || minStep<-3 || total/4<3.5) return null;
+
+    var inside=[];
+    for (var iu=1; iu<=6; iu++) for (var iv=1; iv<=6; iv++) {
+      var p=quadPoint(q,iu/7,iv/7);
+      inside.push(sampleAt(gray,w,h,p.x,p.y));
+    }
+    inside.sort(function(a,b){return a-b;});
+    var paper=inside[Math.floor(inside.length*0.75)];
+    if (paper<145) return null;
+    return {quad:q,paper:paper,light:true};
+  }
+
   function quadCandidates(gray, w, h) {
     // Background reference from the frame border: its mean, and its spread.
     var bs = 0, bss = 0, bn = 0, x, y, t, u;
@@ -1063,7 +1198,17 @@
     //
     // Refusing is the honest outcome, and the hint already knows how to report
     // it. The alternative is a confident crop of something that is not paper.
-    if (Math.abs(bg - thr) < delta && bgSd >= delta) return null;
+    if (Math.abs(bg - thr) < delta && bgSd >= delta) {
+      var rescued = ambiguousReceiptQuad(gray, w, h);
+      if (!rescued) return null;
+      return {
+        quad: rescued.quad, paper: rescued.paper, bg: bg,
+        thr: thr, thr2: -1, mode: -1,
+        scoreLoose: scoreQuad(gray, w, h, rescued.quad, rescued.paper, bg),
+        scoreStrict: -Infinity,
+        looseQuad: rescued.quad, strictQuad: null, fallback: 'edge-strip'
+      };
+    }
 
     var loose = candidateQuad(gray, w, h, thr, bg, delta);
     if (!loose) return null;

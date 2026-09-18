@@ -191,7 +191,7 @@ function detectorWithoutPolarityAgreement() {
 
 const GUARD_CUTS = [
     // quadFromGray: refuse an ambiguous background polarity.
-    ['    if (Math.abs(bg - thr) < delta && bgSd >= delta) return null;\n\n', ''],
+    ['    if (Math.abs(bg - thr) < delta && bgSd >= delta) {', '    if (false && Math.abs(bg - thr) < delta && bgSd >= delta) {'],
     // skewFromGray: refuse a peak sitting on the edge of the coarse scan.
     ['    if (best === -LIMIT || best === LIMIT) return 0;\n\n', ''],
     // skewFromGray: refuse a curve whose minimum is a large fraction of its
