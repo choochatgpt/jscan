@@ -600,6 +600,56 @@ function sheetScene(w, h, deg, paperW, paperH, paperVal, bgVal) {
   }
 }
 
+
+{
+  // A portrait version of the mixed-border phone case. The old polarity guard
+  // still fires, but the page itself has persistent independent side/end seams,
+  // so the edge-only recovery may answer without asking the border which class
+  // is the background.
+  const w = 300, h = 420, join = 130;
+  const gray = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v;
+      if (x < join) {
+        v = 118 + 46 * x / (join - 1);
+        if ((y % 74) < 9) v *= 0.86;
+      } else {
+        const t = (x - join) / (w - join - 1);
+        v = 204 + 26 * t + 5 * Math.sin(x * 0.04) * Math.cos(y * 0.02);
+      }
+      gray[y * w + x] = Math.round(v);
+    }
+  }
+  for (let y = 30; y <= 400; y++) {
+    for (let x = 110; x <= 195; x++) {
+      const k = x <= join ? 0.72 : 0.72 + 0.28 * Math.min(1, (x - join) / 35);
+      gray[y * w + x] = Math.round(246 * k);
+    }
+  }
+
+  const border = [];
+  for (let x = 0; x < w; x++) border.push(gray[x], gray[(h - 1) * w + x]);
+  for (let y = 0; y < h; y++) border.push(gray[y * w], gray[y * w + w - 1]);
+  const bg = border.reduce((a, v) => a + v, 0) / border.length;
+  const thr = JS.otsu(gray);
+  const sd = Math.sqrt(border.reduce((a, v) => a + (v - bg) * (v - bg), 0) / border.length);
+  check('portrait recovery fixture really has ambiguous border polarity',
+    Math.abs(bg - thr) < 16 && sd >= 16,
+    'border=' + bg.toFixed(1) + ' otsu=' + thr + ' sd=' + sd.toFixed(1));
+
+  const q = JS.quadFromGray(gray, w, h);
+  check('portrait mixed-border receipt is recovered by persistent edges', !!q);
+  if (q) {
+    const xs = q.map(p => p.x), ys = q.map(p => p.y);
+    check('portrait recovery lands on the receipt rather than the hand',
+      Math.min(...xs) > w * 0.25 && Math.max(...xs) < w * 0.75 &&
+      Math.min(...ys) < h * 0.12 && Math.max(...ys) > h * 0.90,
+      'x=' + Math.min(...xs).toFixed(0) + '..' + Math.max(...xs).toFixed(0) +
+      ' y=' + Math.min(...ys).toFixed(0) + '..' + Math.max(...ys).toFixed(0));
+  }
+}
+
 /* ============ 3b. edge fitting ============ */
 console.log('\nedge fitting');
 
