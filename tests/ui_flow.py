@@ -2195,18 +2195,16 @@ def main():
         rep.check("Auto all leaves the mode alone, even on a 4.8:1 page it used "
                   "to switch to Receipt",
                   after["mode"] == "auto", "mode %s" % after["mode"])
-        rep.check("and cleans with that mode's preset rather than doing nothing",
+        rep.check("and Auto all changes cleanup controls only, not colour/tone controls",
                   page.evaluate("""() => {
                       const p = JS.activePage(), d = JS.MODE_DEFAULTS[p.mode];
                       return p.adj.flat === d.flat && p.adj.thr === d.thr &&
-                             p.adj.sharp === d.sharp && p.adj.contrast === d.contrast &&
-                             p.adj.sat === d.sat && p.adj.wb === d.wb;
+                             p.adj.sharp === d.sharp &&
+                             p.adj.contrast === 0 && p.adj.sat === 0 && p.adj.wb === 0;
                   }"""),
-                  "tone %s/%s/%s/%s/%s, preset %s"
+                  "cleanup %s/%s/%s colour %s/%s/%s"
                   % (after["flat"], after["thr"], after["sharp"],
-                     after["contrast"], after["sat"],
-                     page.evaluate("JSON.stringify(JS.MODE_DEFAULTS["
-                                   "JS.activePage().mode])")))
+                     after["contrast"], after["sat"], after["wb"]))
 
         # The crop has to reach the pixels, not stop at `page.corners`. The
         # preview canvas *is* the page — `fitBox` sizes it to the image — so a
@@ -2302,8 +2300,10 @@ def main():
         page.wait_for_timeout(400)
         from_orig = page.evaluate(CHROME)
         print("        Auto clean from Original: %s" % from_orig["mode"])
-        rep.check("Auto clean on a strip picks Receipt too, not Auto colour",
-                  from_orig["mode"] == "receipt", from_orig["mode"])
+        rep.check("Auto clean preserves Original instead of choosing a tone",
+                  from_orig["mode"] == "original", from_orig["mode"])
+        page.evaluate("JS.setMode('receipt')")
+        page.wait_for_timeout(300)
 
         # And the mode reaches the pixels too. `receipt` is not `auto` with a
         # different label: it renders through the threshold path — flatten,
@@ -2350,12 +2350,9 @@ def main():
                     sharp: p.adj.sharp,
                     corners: p.corners ? p.corners.map(c => [+c.x.toFixed(6), +c.y.toFixed(6)]) : null,
                     fine: +p.fine.toFixed(6), coarse: p.coarse}; }"""
-        # Receipt is the mode with no chip of its own, so it is the one the user
-        # is most likely to be sitting on when they reach for Auto colour: Auto
-        # clean put them there.
-        page.evaluate("JS.setMode('original')")
-        page.wait_for_timeout(200)
-        page.click("#btn-magic")
+        # Start explicitly in Receipt. Auto clean is no longer allowed to choose
+        # any tone mode, so this chip-toggle test establishes its own baseline.
+        page.evaluate("() => { JS.setMode('receipt'); const p = JS.activePage(); p.modeTap = ''; p.modeBack = null; }")
         page.wait_for_timeout(350)
         base = page.evaluate(ADJ)
         base_px = page.evaluate(CHROME)

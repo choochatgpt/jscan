@@ -707,21 +707,17 @@
     return { found: !!quad, skew: page.fine };
   };
 
-  /** Apply the recommended tuning for the current mode. */
+  /**
+   * Apply cleanup for the current mode without touching tone choice.
+   * Auto clean owns only shadow flattening, threshold bias and sharpening.
+   * Colour/tone controls, selected mode and chip-toggle history belong to the
+   * user and survive the button.
+   */
   JS.autoEnhance = function (page) {
-    var d = JS.MODE_DEFAULTS[page.mode] || JS.MODE_DEFAULTS.auto;
-    // A preset that arrives from a button is not a chip the user turned on, so
-    // there is nothing for a second tap on that chip to undo. See JS.setMode.
-    page.modeTap = '';
-    page.modeBack = null;
+    var d = JS.MODE_DEFAULTS[page.mode] || JS.MODE_DEFAULTS.original;
     page.adj.flat = d.flat;
     page.adj.thr = d.thr;
     page.adj.sharp = d.sharp;
-    page.adj.contrast = d.contrast;
-    page.adj.wb = d.wb;
-    page.adj.sat = d.sat;
-    page.adj.bright = 0;
-    page.adj.warmth = 0;
     page.touched = true;
     JS.invalidate(page);
   };

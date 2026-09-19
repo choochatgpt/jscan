@@ -1080,7 +1080,7 @@
       var width=R[ri].x-L[li].x;
       if (width<w*0.16 || width>w*0.92) continue;
       var floor=Math.min(L[li].s,R[ri].s);
-      var need=width>=w*0.68 ? 6 : 15;
+      var need=width>=w*0.68 ? 6 : (width>=w*0.48 ? 9 : 15);
       if (floor<need) continue;
       if (Math.min(L[li].far,R[ri].far)<3) continue;
       if (Math.min(L[li].cov,R[ri].cov)<0.55) continue;
@@ -1143,11 +1143,46 @@
       return best;
     }
 
+    // Prefer a modestly farther-out persistent side over a stronger interior
+    // seam (fold/shadow/print edge). Each side may move at most 14% of width.
+    function outwardSide(cands, ref, leftSide, otherX) {
+      var best=ref, limit=w*0.14;
+      for (var oi=0; oi<cands.length; oi++) {
+        var e=cands[oi];
+        if (!(leftSide ? e.x<ref.x : e.x>ref.x)) continue;
+        if (Math.abs(e.x-ref.x)>limit) continue;
+        var width=leftSide ? otherX-e.x : e.x-otherX;
+        if (width<w*0.16 || width>w*0.92) continue;
+        if (e.s<Math.max(7,ref.s*0.48)) continue;
+        if (e.far<Math.max(2.5,ref.far*0.45)) continue;
+        if (e.cov<Math.max(0.52,ref.cov-0.12)) continue;
+        if (leftSide ? e.x<best.x : e.x>best.x) best=e;
+      }
+      return best;
+    }
+    if (pair) {
+      var ol=outwardSide(L,pair.l,true,pair.r.x);
+      var orr=outwardSide(R,pair.r,false,ol.x);
+      ol=outwardSide(L,ol,true,orr.x);
+      pair={l:ol,r:orr};
+    }
+
     var top=null, bot=null, mode='pair';
     if (pair) {
       top=outerEnd(endCandidates(true,pair.l.x,pair.r.x,8,3),true);
       bot=outerEnd(endCandidates(false,pair.l.x,pair.r.x,8,3),false);
-      if (!top && !bot) pair=null;
+      if (!top && !bot) {
+        var inheritedWidth=pair.r.x-pair.l.x;
+        var strongSides=inheritedWidth<=w*0.76 &&
+          Math.min(pair.l.s,pair.r.s)>=9 &&
+          Math.min(pair.l.far,pair.r.far)>=3 &&
+          Math.min(pair.l.cov,pair.r.cov)>=0.62;
+        if (!strongSides) pair=null;
+        else {
+          top={y:0,m:0,s:0,far:0,cov:1};
+          bot={y:h-1,m:0,s:0,far:0,cov:1};
+        }
+      }
     }
 
     if (!pair) {
@@ -1396,10 +1431,15 @@
     var quad = JS.quadFromGray(gray, w, h);
     if (!quad) return null;
 
-    // Back to full-resolution coordinates, with a small outward margin.
+    // Back to full-resolution coordinates. Long receipts get a larger safety
+    // margin: clipping ink is worse than carrying a few pixels of background.
     var inv = 1 / s;
     quad = quad.map(function (p) { return { x: p.x * inv, y: p.y * inv }; });
-    quad = expandQuad(quad, 0.012, sw, sh);
+    function qdist(a,b) { return Math.hypot(a.x-b.x,a.y-b.y); }
+    var qw=(qdist(quad[0],quad[1])+qdist(quad[3],quad[2]))/2;
+    var qh=(qdist(quad[0],quad[3])+qdist(quad[1],quad[2]))/2;
+    var qar=Math.max(qw,qh)/Math.max(1,Math.min(qw,qh));
+    quad = expandQuad(quad, qar>=1.70 ? 0.020 : 0.012, sw, sh);
 
     // Bail out if the result is nearly the whole frame — no useful crop.
     if (JS.quadArea(quad) > sw * sh * 0.985) return null;

@@ -1034,28 +1034,14 @@
     }
   };
 
-  /* Auto clean on a page that is still in Original has to pick a mode, because
-     "clean it" names no way of doing so. It used to pick Auto colour outright,
-     which made the two one-tap buttons disagree: on a receipt, Auto all reads
-     the shape and lands in Receipt while Auto clean landed in Auto colour, and
-     the two modes do not treat a cast shadow the same way. Asking the same
-     question Auto all asks costs one cached canvas and removes the last way the
-     two buttons can differ. What is left is the crop, which is the whole of
-     what Auto all does that Auto clean does not.
-
-     The shape it reads is the page as it stands, so on a photo the user has not
-     cropped yet it is the *frame* being measured. That is deliberate and it is
-     why this asks about Original alone: Auto all measures a receipt because it
-     has just cropped to one, and Auto clean, which does not crop, would be
-     guessing from a frame that still has the table in it. */
+  /* Auto clean never chooses a tone. It refreshes cleanup-owned controls only. */
   JS.runMagic = function () {
     var page = activePage();
     if (!page) return;
-    if (page.mode === 'original') page.mode = JS.suggestMode(page);
     JS.autoEnhance(page);
     syncEditorChrome();
     renderPreview(true);
-    hint('Auto clean applied · ' + (JS.MODE_LABELS[page.mode] || page.mode));
+    hint('Auto clean applied');
   };
 
   /* --------------------------------------------------------- export flow */
@@ -1173,27 +1159,10 @@
 
     JS.$('btn-help').addEventListener('click', function () { openSheet('sheet-help'); });
     JS.$('btn-back').addEventListener('click', function () { setView('home'); });
-    // "Done" finishes a page: the render is baked into it and the original is
-    // dropped, so the grid, the editor and the export all show the cleaned
-    // result rather than the raw photo.
-    JS.$('btn-save').addEventListener('click', async function () {
-      var page = activePage();
-      var btn = JS.$('btn-save');
-      if (btn.disabled) return;               // a slow phone invites double taps
-      btn.disabled = true;
-      try {
-        if (page && !JS.isCommitted(page)) {
-          showBusy('Finishing…');
-          await JS.yieldToUI();
-          await JS.commitPage(page);
-        }
-      } catch (e) {
-        console.warn('commit failed', e);
-        hint('Could not finish this page');
-      } finally {
-        hideBusy();
-        btn.disabled = false;
-      }
+    // Done is navigation, not an encode step. Preview/export already render the
+    // live edit state, so baking here only makes the user wait.
+    JS.$('btn-save').addEventListener('click', function () {
+      if (!activePage()) return;
       setView('home');
     });
 

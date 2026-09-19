@@ -16,6 +16,8 @@ telling two builds apart, not for promising anything.
 
 ### What each build changed
 
+- **1.7.4** - Real-receipt mobile trial: difficult receipt recovery gives persistent outer side evidence a controlled preference over stronger interior seams, and a strong tall receipt may inherit both photo ends when its two long paper edges are clear but the torn/overexposed ends are not. Long receipt crops get a slightly larger safety margin. Auto clean now changes cleanup controls only (shadow/threshold/sharpness): it never chooses a tone mode and never resets colour, white balance, contrast, brightness or warmth. Auto all remains Auto crop + that same Auto clean. Done is immediate again and no longer bakes/re-encodes the page on tap; live edit state remains authoritative for preview/export.
+
 - **1.7.3** - Auto crop adds a guarded portrait edge-recovery path for difficult real receipts and bills when the normal detector cannot form a page. It supports modestly slanted receipt sides and, only with strong top-and-bottom evidence, pages that fill the photo side-to-side. The mixed-background safety guard remains in place. Auto all remains Auto crop + Auto clean in the already-selected tone mode; it does not choose Auto colour.
 
 - **1.7.2** - Auto crop adds a guarded edge-strip fallback for long receipts on mixed pale backgrounds. The normal detector remains the first path. Auto all remains Auto crop + Auto clean in the already-selected tone mode; it does not choose Auto colour.
