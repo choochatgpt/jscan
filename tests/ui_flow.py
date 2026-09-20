@@ -241,7 +241,7 @@ GUARD_CUTS = [
     # the tally no side can be inherited either, so the fit refuses exactly
     # where it used to.
     (r"\n      if \(onFrame\(p, w, h\)\) \{ onBorder\[best\]\+\+; continue; \}\n", "\n"),
-    (r"        if \(buckets\[i\]\.length \|\| !onBorder\[i\] \|\| \+\+border > 1\) return null;\n"
+    (r"        if \(\(buckets\[i\]\.length && !crossing\) \|\| !onBorder\[i\] \|\| \+\+border > 1\) return null;\n"
      r"        lines\.push\(lineThrough\(q\[i\], q\[\(i \+ 1\) % 4\]\)\);\n"
      r"        continue;\n", "        return null;\n"),
     # quadFromEdges: a hull pinned to the photo's corners is accepted as the page.

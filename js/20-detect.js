@@ -445,7 +445,7 @@
    * function asks whether a side's fit is *self-consistent*, and a handful of
    * points agreeing on a line is self-consistent however few of them there are.
    */
-  function refineOnce(pts, q, w, h, band) {
+  function refineOnce(pts, q, w, h, band, axisGuard) {
     var buckets = [[], [], [], []], onBorder = [0, 0, 0, 0], i;
     for (i = 0; i < pts.length; i++) {
       var p = pts[i], best = 0, bestD = Infinity;
@@ -468,6 +468,12 @@
       // corner is an extrapolation well past the last of them.
       var core = sideCore(buckets[i], q[i], q[(i + 1) % 4], band);
       var fit = core ? robustLine(core, tol) : null;
+      // A side's fit has to run the way that side runs. Only asked of the
+      // re-fit, where the rough quad is known to be the page's own rectangle
+      // rather than the frame's; see SIDE_AXIS_MAX.
+      var crossing = axisGuard && fit &&
+                     sideAxisOff(q[i], q[(i + 1) % 4], fit.line) > SIDE_AXIS_MAX;
+      if (crossing) fit = null;
       if (!fit) {
         // Every pixel offered for this side lay on the photo's border, so the
         // page runs off the frame here: the border is not evidence about the
@@ -477,7 +483,7 @@
         // refusal, as does a second inherited side, which would leave a quad
         // that is mostly the frame's outline and describes the photo, not the
         // page.
-        if (buckets[i].length || !onBorder[i] || ++border > 1) return null;
+        if ((buckets[i].length && !crossing) || !onBorder[i] || ++border > 1) return null;
         lines.push(lineThrough(q[i], q[(i + 1) % 4]));
         continue;
       }
@@ -535,7 +541,10 @@
    *
    * Any pass that cannot support all four edges leaves the corners as they were.
    */
+  var lastQuadFitted = false;
   JS.quadFromEdges = function (pts, w, h, rough) {
+    lastQuadFitted = false;
+
     if (!pts || pts.length < 8) return null;
     var q = rough || hullCorners(convexHull(pts));
     if (!q) return null;
@@ -543,7 +552,7 @@
     var bands = [0.12, 0.25];
     var support = 0;
     for (var iter = 0; iter < bands.length; iter++) {
-      var next = refineOnce(pts, q, w, h, bands[iter]);
+      var next = refineOnce(pts, q, w, h, bands[iter], !!rough);
       if (!next) break;
       // Only a *later* pass is on trial. The first is what turns the hull's four
       // extreme points into four fitted edges, and on a clean page the corners
@@ -565,6 +574,7 @@
       support = next.support;
       q = next.q;
       fitted = true;
+      lastQuadFitted = true;
     }
     // Corners read off the hull are evidence about the page only while the blob
     // lies inside the photo. Let the blob be cut by the frame and the point that
@@ -848,7 +858,7 @@
    * Returns null at any of the refusals the single-threshold version had, so a
    * candidate that cannot be found simply does not compete.
    */
-  function candidateQuad(work, w, h, thr, bg, delta) {
+  function candidateQuad(work, w, h, thr, bg, delta, rough) {
     var bgIsLight = bg > thr;
     var mask = new Uint8Array(w * h), i, v;
     for (i = 0; i < mask.length; i++) {
@@ -864,7 +874,7 @@
 
     // Rough corners off the hull's extreme points, then fitted to the real
     // edges of the page rather than left on whichever pixel stuck out furthest.
-    var quad = JS.quadFromEdges(JS.boundaryPixels(blob, mask, w, h), w, h);
+    var quad = JS.quadFromEdges(JS.boundaryPixels(blob, mask, w, h), w, h, rough);
     if (!quad) return null;
 
     // Reject a quad that covers almost nothing — usually a bright object that
@@ -884,8 +894,70 @@
     // `light` is which side of `thr` the *background* sits on, and so which side
     // the mask looked at. Returned because a second threshold has to be checked
     // against this — see `quadCandidates`.
-    return { quad: quad, paper: paper, light: bgIsLight };
+    return { quad: quad, paper: paper, light: bgIsLight, fitted: lastQuadFitted };
   }
+
+  /**
+   * How far a fitted line runs across the side it was fitted to, in degrees.
+   *
+   * Zero means the line runs along the side; ninety means it is the side's
+   * perpendicular -- a fit that has found some other edge entirely. A left side
+   * fitted to a horizontal line has not found the left edge: for a page running
+   * off the photo's frame it has found the boundary of the surface the page is
+   * lying on, which is not evidence about this side at all.
+   */
+  function sideAxisOff(a, b, line) {
+    var dx = b.x - a.x, dy = b.y - a.y;
+    var L = Math.sqrt(dx * dx + dy * dy);
+    if (L < 1e-6) return 0;
+    var nx = -line.b, ny = line.a;                 // the fitted line's direction
+    var NL = Math.sqrt(nx * nx + ny * ny);
+    if (NL < 1e-9) return 0;
+    var cos = Math.abs((dx * nx + dy * ny) / (L * NL));
+    if (cos > 1) cos = 1;
+    return Math.acos(cos) * 180 / Math.PI;
+  }
+
+  // See `sideAxisOff`. Measured on the app's frame: pix72's frame side fits 88.5
+  // degrees across itself and pix73's 48.2, while every fitted side that is a
+  // real page edge sits within 1.6 degrees of its own side.
+  var SIDE_AXIS_MAX = 20;
+
+  /**
+   * How far outside `rough` the quad `q` now reaches, in work pixels.
+   *
+   * Every edge of `rough` is a line with an inside and an outside -- the inside
+   * being the side its own centroid is on. The answer is the furthest any corner
+   * of `q` has got past one of those lines. It is only meaningful for two quads
+   * that describe the same object, which is exactly how it is used: `q` is a
+   * re-fit of `rough`, not an independent answer.
+   */
+  function quadOutwardGrowth(rough, q) {
+    var cx = 0, cy = 0, i, j;
+    for (i = 0; i < 4; i++) { cx += rough[i].x; cy += rough[i].y; }
+    cx /= 4; cy /= 4;
+    var worst = 0;
+    for (i = 0; i < 4; i++) {
+      var a = rough[i], b = rough[(i + 1) % 4];
+      var ex = b.x - a.x, ey = b.y - a.y;
+      var L = Math.sqrt(ex * ex + ey * ey);
+      if (L < 1e-6) continue;
+      var nx = -ey / L, ny = ex / L;
+      if ((cx - a.x) * nx + (cy - a.y) * ny < 0) { nx = -nx; ny = -ny; }
+      for (j = 0; j < 4; j++) {
+        var d = (q[j].x - a.x) * nx + (q[j].y - a.y) * ny;
+        if (-d > worst) worst = -d;
+      }
+    }
+    return worst;
+  }
+
+  // See `quadOutwardGrowth`. The re-fit may pull the crop's sides in -- that is
+  // its whole purpose -- and may nudge them by a few pixels; it may not
+  // re-describe how far the page reaches. Measured outward reach: 5.14 px
+  // (pix72) and 6.02 px (pix73) where the crop is right, 25.16 px (ori2) where
+  // the fit has followed the box edge above the sheet and the shadow line below.
+  var REFIT_GROW_FRAC = 0.03;
 
   /* ------------------------------------------------- corner settling ---- */
 
@@ -1413,7 +1485,29 @@
       // the normal detector's edge guards were added to refuse.
       if (!edgeRescue || edgeRescue.mode !== 'pair' ||
           edgeRescue.aspect < 1.80 ||
-          (edgeRescue.area > 0.66 && !edgeRescue.boundedWideReceipt)) return null;
+          (edgeRescue.area > 0.66 && !edgeRescue.boundedWideReceipt)) {
+        // A `frame-sides` rescue is a page that runs off the photo. Its own
+        // geometry is refused because the frame side it picked is not the
+        // page -- but its corners are the right *shape*, and re-fitting the
+        // boundary from them finds the page's real edges. Two things have to
+        // hold before that is believed. The refinement must have fitted
+        // something: without that the rough quad comes back verbatim and the
+        // crop is the whole frame. And the result must stay inside the
+        // geometry the rescue already described -- a re-fit that pushes a
+        // corner outward is following a boundary beyond the page, not the
+        // page. See `quadOutwardGrowth`.
+        if (edgeRescue && edgeRescue.mode === 'frame-sides') {
+          var refit = candidateQuad(gray, w, h, thr, bg, delta, edgeRescue.quad);
+          var grew = refit && refit.fitted
+            ? quadOutwardGrowth(edgeRescue.quad, refit.quad) : Infinity;
+          if (grew <= REFIT_GROW_FRAC * Math.max(w, h)) {
+            return recoveredCandidateSet(gray, w, h,
+              { quad: refit.quad, paper: refit.paper, mode: 'frame-sides-refit' },
+              bg, thr);
+          }
+        }
+        return null;
+      }
       return recoveredCandidateSet(gray,w,h,edgeRescue,bg,thr);
     }
 

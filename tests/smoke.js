@@ -205,7 +205,7 @@ const GUARD_CUTS = [
     // the pass refuses exactly where it used to.
     ["      if (onFrame(p, w, h)) { onBorder[best]++; continue; }\n", ''],
     // refineOnce: never inherit a side from the rough quad.
-    ['        if (buckets[i].length || !onBorder[i] || ++border > 1) return null;\n'
+    ['        if ((buckets[i].length && !crossing) || !onBorder[i] || ++border > 1) return null;\n'
      + '        lines.push(lineThrough(q[i], q[(i + 1) % 4]));\n'
      + '        continue;\n', '        return null;\n'],
     // quadFromEdges: refuse a hull whose corners are the photo's, not the page's.
