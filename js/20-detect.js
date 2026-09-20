@@ -1053,10 +1053,20 @@
         vals.push(left ? b-a : a-b);
         far.push(left ? b2-a2 : a2-b2);
       }
-      var cov=0;
-      for (var j=0; j<vals.length; j++) if (vals[j]>=2.5) cov++;
+      // `cov` is signed: the share of rows where the paper is the brighter of
+      // the two probes. `covm` drops the sign and asks only whether the two
+      // probes differ at all. They answer different questions, and a mixed
+      // background is exactly the case where they part: a lit hand or a bright
+      // out-of-focus surface beyond the edge is still *an edge*, it just has the
+      // paper on the darker side of it, so the boundary is present in every row
+      // while the signed coverage collapses.
+      var cov=0, covm=0;
+      for (var j=0; j<vals.length; j++) {
+        if (vals[j]>=2.5) cov++;
+        if (Math.abs(vals[j])>=2.5) covm++;
+      }
       return {s:robust(vals), far:robust(far), cov:cov/vals.length,
-              x:x0, m:slope};
+              covm:covm/vals.length, x:x0, m:slope};
     }
 
     function bestAtX(x0, left) {
@@ -1082,10 +1092,26 @@
       var floor=Math.min(L[li].s,R[ri].s);
       var need=width>=w*0.68 ? 6 : (width>=w*0.48 ? 9 : 15);
       if (floor<need) continue;
+      // One side's far probe can fail for a reason that says nothing about the
+      // pair: the contrast beyond its edge does not survive another `probe`
+      // outwards, because what is out there is a hand or a mixed surface rather
+      // than more of one background. When that happens the *other* side has to
+      // carry the far evidence, and the mixed side has to be well covered.
+      //
+      // "Well covered" is asked of `covm` here, not `cov`. This branch exists to
+      // excuse a side whose background is mixed, and then measured that same
+      // side with the one statistic a mixed background necessarily destroys --
+      // so it could only ever admit a mixed side that was not mixed. The bar is
+      // unchanged at 0.68; what changed is that it is now asking the question
+      // the branch was written to ask. Measured on the reported pair61: its
+      // right edge is a real boundary in 30 of 31 rows, but the background
+      // beyond it is brighter than the paper in 11 of them, so signed coverage
+      // was 0.65 and the pair was refused although every other number for it
+      // (left s=57 far=23 cov=0.77; right s=15; width 0.716w) was admissible.
       var minFar=Math.min(L[li].far,R[ri].far);
       var mixedSideOK=width<=w*0.76 && (
-        (L[li].far>=3 && R[ri].s>=15 && R[ri].cov>=0.68) ||
-        (R[ri].far>=3 && L[li].s>=15 && L[li].cov>=0.68));
+        (L[li].far>=3 && R[ri].s>=15 && R[ri].covm>=0.68) ||
+        (R[ri].far>=3 && L[li].s>=15 && L[li].covm>=0.68));
       if (minFar<3 && !mixedSideOK) continue;
       if (Math.min(L[li].cov,R[ri].cov)<0.55) continue;
       var ps=floor*2+L[li].s+R[ri].s+0.20*(L[li].far+R[ri].far);
@@ -1447,18 +1473,47 @@
     // difficultPageQuad may have useful *side* evidence even when its full quad
     // is unsafe vertically. Never replace the normal quad wholesale here.
     //
-    // The refinement is deliberately one-sided and heavily tagged:
+    // The refinement is deliberately one-sided and heavily tagged, and it has
+    // two admissible shapes because there are two ways for a left side to be
+    // wrong:
     // - portrait difficult recovery must independently return a side pair;
     // - its own area must remain under the existing 0.66 safety cap;
-    // - both projected left corners must move outward by 1.5..14% of width;
+    // - both projected left corners must move outward by 0..14% of width;
     // - difficult right-side disagreement must be small (<=3.5% of width);
-    // - normal candidate must already occupy 50..64% of the frame;
-    // - left-only expansion may add only 3..10% area and stay <=0.66;
-    // - the independent edge score must improve by at least 3 points.
+    // - the normal candidate's quad must still be convex after the move;
+    // - a nudge (each corner moving >=1.5% of width): the normal candidate must
+    //   already occupy 50..64% of the frame, left-only expansion may add only
+    //   3..10% area and stay <=0.66, and the independent edge score must improve
+    //   by at least 3 points;
+    // - a shear repair (the two corners disagreeing by >=8% of width): the
+    //   replacement line must be plumb to within 1% of width, must be a strong
+    //   boundary (>=15 levels) and must beat the side it replaces by at least
+    //   the same 3 points, while the area may grow to the ordinary 0.66 cap plus
+    //   the wedge the moves actually add, and never past 0.74.
     // Top, bottom and right coordinates are inherited unchanged from normal.
     var pickedScore = (pick === strict) ? scoreStrict : scoreLoose;
     var sideRefineTag = null;
     var edgeOpinion = difficultPageQuad(gray,w,h);
+
+    // The edge opinion is evidence about one side, not a competing page.
+    //
+    // It was allowed to become the answer outright, on the terms `strict`
+    // competes on -- the same `scoreQuad`, the same `SWITCH_MARGIN`, and the
+    // same admissibility the `!loose` rescue applies. Measured over the corpus
+    // that switch never fires: the pick outscores the opinion on every photo but
+    // one, by margins of 2 to 172 levels. The exception is pair62, where the
+    // opinion scores 46.66 against a pick of 25.19 -- a 21.47 gap that only the
+    // margin keeps out.
+    //
+    // Pair62 is also the reason to leave the switch out. There the opinion's
+    // bottom edge sits at y 355..360 of a 420-high frame where the pick's sits
+    // at 405..416, and the crop it describes cuts the receipt's last lines. So
+    // on the one photo where scoring would promote it, scoring is not the
+    // arbiter: an opinion that disagrees about an *end* of the page and still
+    // scores higher is being scored on a different geometry, not a better one.
+    //
+    // What it is good for is the one side it measures independently, and that is
+    // what the refine below spends it on.
     if (edgeOpinion && edgeOpinion.mode === 'pair' && edgeOpinion.area <= 0.66) {
       var baseQ=pick.quad, edgeQ=edgeOpinion.quad;
       function edgeXAtY(a,b,yy) {
@@ -1478,6 +1533,14 @@
         }
         return true;
       }
+      // What one side's boundary is worth, on the measure `scoreQuad` itself
+      // grades with: the mean inside-minus-outside step over the middle 70% of
+      // the side. A shear is a question about one side, so it is asked here.
+      function sideMean(q,si) {
+        var sf=sideFrame(q,si), sum=0;
+        for (var sk=3;sk<=17;sk++) sum+=sideStep(gray,w,h,sf.a,sf.b,sf.nx,sf.ny,sk/20);
+        return sum/15;
+      }
       var lx0=edgeXAtY(edgeQ[0],edgeQ[3],baseQ[0].y);
       var lx3=edgeXAtY(edgeQ[0],edgeQ[3],baseQ[3].y);
       var leftMoveTop=baseQ[0].x-lx0;
@@ -1495,12 +1558,50 @@
       var refinedArea=Math.abs(JS.quadArea(refined))/(w*h);
       var areaRatio=refinedArea/Math.max(1e-9,baseArea);
       var refineScore=scoreQuad(gray,w,h,refined,pick.paper,bg);
-      if (leftMoveTop>=w*0.015 && leftMoveBot>=w*0.015 &&
-          leftMoveTop<=w*0.14 && leftMoveBot<=w*0.14 &&
-          rightDisagree<=w*0.035 &&
-          baseArea>=0.50 && baseArea<=0.64 &&
-          refinedArea<=0.66 && areaRatio>=1.03 && areaRatio<=1.10 &&
-          convex4(refined) && refineScore>=pickedScore+3.0) {
+      // The gates the two shapes share: the edit is local. Only x of the two
+      // left corners moves, both outward (never trimming paper) and never past
+      // the 14% cap; the other three sides stay within 3.5% of width; the quad
+      // stays convex.
+      var moveOK=leftMoveTop>=0 && leftMoveBot>=0 &&
+        leftMoveTop<=w*0.14 && leftMoveBot<=w*0.14;
+      var othersOK=rightDisagree<=w*0.035 && convex4(refined);
+      // The nudge, unchanged: a small edit leaves the other three sides -- and so
+      // most of the score -- where they were, which is what makes the whole-quad
+      // score a fair judge of it.
+      var small=moveOK && othersOK &&
+        leftMoveTop>=w*0.015 && leftMoveBot>=w*0.015 &&
+        baseArea>=0.50 && baseArea<=0.64 &&
+        refinedArea<=0.66 && areaRatio>=1.03 && areaRatio<=1.10 &&
+        refineScore>=pickedScore+3.0;
+      // The shear repair, judged on the side it repairs instead. When the pick's
+      // two left corners disagree by most of a tenth of the width, the left side
+      // is not a fitted edge; un-shearing it necessarily re-adds the wedge the
+      // shear had cut, so the area *must* grow, and the interior term of the
+      // score moves with the left edge -- on pair62 the interior share falls
+      // from 0.69 to 0.56 with the edge right, because the 6x6 interior grid
+      // follows the left side into the receipt's dense bottom text. So the
+      // whole-quad score is not the judge here. The side is: the replacement
+      // line must be plumb, must be a strong boundary by the same 15-level bar
+      // the pair logic calls a strong side, and must beat the side it replaces
+      // by the same 3-point margin the whole-quad test uses. The area bound
+      // becomes the ordinary 0.66 cap plus the wedge the moves add -- the
+      // shoelace delta of moving two x coordinates, computed rather than fitted
+      // -- and never past 0.74, the ceiling the bounded-wide-receipt family
+      // already sets.
+      //
+      // The 8%-of-width shear bar sits in an empty band: measured over the
+      // corpus, the largest shear that reaches this code with a refine built is
+      // 4.4% of width and pair62's is 11.7%, so any bar between them behaves the
+      // same way.
+      var shear=Math.abs(leftMoveBot-leftMoveTop);
+      var wedgeFrac=(leftMoveTop*Math.abs(baseQ[1].y-baseQ[3].y) +
+                     leftMoveBot*Math.abs(baseQ[0].y-baseQ[2].y))/(2*w*h);
+      var sheared=moveOK && othersOK &&
+        shear>=w*0.08 &&
+        Math.abs(refined[0].x-refined[3].x)<=w*0.01 &&
+        sideMean(refined,3)>=15 && sideMean(refined,3)>=sideMean(baseQ,3)+3.0 &&
+        refinedArea<=0.66+wedgeFrac && refinedArea<=0.74;
+      if (small || sheared) {
         pick={quad:refined,paper:pick.paper,light:pick.light};
         sideRefineTag='left-side-edge-refine';
       }

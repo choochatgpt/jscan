@@ -259,6 +259,35 @@ OLD_PICK_CUT = (
     r"var pick = strict && scoreStrict > scoreLoose \+ SWITCH_MARGIN \? strict : loose;",
     r"var pick = loose;")
 
+# The two halves of the 1.7.6 receipt work, each as the smallest edit that takes
+# exactly one of them back out, so each can be used as a falsifier for the check
+# it is the subject of.
+#
+# The first: a mixed-background side is asked whether the two probes differ at
+# all rather than which of them is brighter. On pair61 the receipt's left edge
+# has the paper on the darker side of it for part of its length, so the signed
+# count collapses and the side was discarded -- which is why the photo came back
+# as "no clear page edge found".
+MIXED_COV_CUT = (
+    r"\(L\[li\]\.far>=3 && R\[ri\]\.s>=15 && R\[ri\]\.covm>=0\.68\) \|\|\n"
+    r"        \(R\[ri\]\.far>=3 && L\[li\]\.s>=15 && L\[li\]\.covm>=0\.68\)\);",
+    r"(L[li].far>=3 && R[ri].s>=15 && R[ri].cov>=0.68) ||\n"
+    r"        (R[ri].far>=3 && L[li].s>=15 && L[li].cov>=0.68));")
+# The second: the left-side refine also accepts a *shear repair* -- a pick whose
+# two left corners disagree by most of a tenth of the width, where the area must
+# grow because un-shearing re-adds the wedge the shear had cut, so the area and
+# whole-quad gates of the small-nudge path cannot judge it. pair62 is that photo.
+SHEAR_CUT = (
+    r"var sheared=moveOK && othersOK &&",
+    r"var sheared=false && moveOK && othersOK &&")
+
+# 1.7.6 briefly added a third displacer -- the independent edge opinion allowed
+# to be the answer outright. It is not here, and there is no cut for it, because
+# it was measured and dropped: over the whole corpus the pick outscores the
+# opinion on every photo but one, and on that one (pair62) the opinion's geometry
+# cuts the receipt's last lines. The two cuts above are the whole of what stands
+# between the current detector and the old guards.
+
 
 def _cut_detect(cuts):
     src = open(os.path.join(ROOT, "js", "20-detect.js"), encoding="utf-8").read()
@@ -2824,6 +2853,97 @@ def main():
                   "reported failure",
                   old_side["right"] is not None and old_side["right"] > 0.95,
                   "right side %.3f" % (old_side["right"] or -1))
+
+        print("\nthe two photos from the 1.7.6 report")
+        # Both are taxi receipts on a pale hand. The report was one line each:
+        # "still cannot detect the edges" with a job log, and "found wrong corner
+        # and sheared the image wrong". They are two different failures and they
+        # are fixed by two different changes, so they are pinned separately, each
+        # against its own falsifier.
+        #
+        # What the numbers below are, and are not. The crop's left corners are
+        # x of the top-left and the bottom-left; on a receipt those should be the
+        # same number, because the paper's left edge is straight, so the gap
+        # between them is how sheared the crop is -- 0.1195 of the width before
+        # this build, 0.0000 after. Everything here is read off the page the app
+        # actually produced, after the button a user presses.
+        def corners_of():
+            return page.evaluate("""() => {
+                const p = JS.activePage();
+                return p.corners
+                  ? p.corners.map(c => [+c.x.toFixed(4), +c.y.toFixed(4)]) : null;
+            }""")
+
+        def load(path):
+            """A fresh import, with no crop on the page yet.
+
+            Auto crop only assigns corners when it finds a quad; it does not
+            clear them when it declines. So a falsifier that runs after a
+            successful crop and expects a refusal would read the *previous*
+            run's corners and call them this one's -- which is what the first
+            version of the pair61 check below did.
+            """
+            page.goto(PAGE_URL)
+            page.wait_for_function("!!window.JS && !!JS.app")
+            page.set_input_files("#file-gallery", path)
+            page.wait_for_function("JS.app.pages.length === 1", timeout=15000)
+            page.evaluate("JS.openEditor(0)")
+            page.wait_for_function("JS.app.view === 'edit'")
+
+        st61 = auto_on(os.path.join(FIXTURES, "pair61_reported.jpg"))
+        c61 = corners_of()
+        print("        pair61: crop area %.3f  corners %s  %r"
+              % (st61["area"], c61, st61["hint"]))
+        rep.check("pair61 is cropped rather than refused as having no page edge",
+                  c61 is not None and 0.10 < st61["area"] < 0.95,
+                  "area %.3f corners %s" % (st61["area"], c61))
+        # And the falsifier: with the signed coverage back the photo is refused
+        # again, which is the report it came in with. Loaded fresh, because a
+        # refusal leaves no corners behind to read.
+        load(os.path.join(FIXTURES, "pair61_reported.jpg"))
+        page.add_script_tag(content=_cut_detect([MIXED_COV_CUT]))
+        page.click("#btn-auto")
+        page.wait_for_timeout(700)
+        old61 = corners_of()
+        hint61 = page.evaluate("JS.$('stage-hint').textContent")
+        print("        with only signed coverage: %s  %r" % (old61, hint61))
+        rep.check("the mixed-side coverage change is what crops pair61: with the "
+                  "signed test back it has no page edge",
+                  old61 is None, old61)
+        rep.check("and it reports the same symptom it was reported with",
+                  "no clear page edge" in hint61.lower(), hint61)
+
+        st62 = auto_on(os.path.join(FIXTURES, "pair62_reported.jpg"))
+        c62 = corners_of()
+        d_l = abs(c62[0][0] - c62[3][0])
+        print("        pair62: crop area %.3f  left corners %.4f / %.4f  shear %.4f"
+              % (st62["area"], c62[0][0], c62[3][0], d_l))
+        rep.check("pair62's crop has a plumb left side, not a sheared one",
+                  d_l < 0.02, "left corners %.4f / %.4f" % (c62[0][0], c62[3][0]))
+        rep.check("and it is a receipt-sized part of the frame, with the bottom "
+                  "still in the crop",
+                  0.55 < st62["area"] < 0.85 and c62[3][1] > 0.9,
+                  "area %.3f bottom-left y %.4f" % (st62["area"], c62[3][1]))
+        # The safety property of the repair, and the reason it can be narrow: the
+        # three sides it does not edit are left where they were. A refine that
+        # also moved the right side would be re-fitting the page, not fixing one
+        # side of it.
+        load(os.path.join(FIXTURES, "pair62_reported.jpg"))
+        page.add_script_tag(content=_cut_detect([SHEAR_CUT]))
+        page.click("#btn-auto")
+        page.wait_for_timeout(700)
+        old62 = corners_of()
+        print("        with the shear repair cut: left corners %.4f / %.4f  shear %.4f"
+              % (old62[0][0], old62[3][0], abs(old62[0][0] - old62[3][0])))
+        rep.check("the shear repair is what un-shears pair62: without it the crop "
+                  "is sheared by most of a tenth of the width",
+                  abs(old62[0][0] - old62[3][0]) > 0.08,
+                  "left corners %.4f / %.4f" % (old62[0][0], old62[3][0]))
+        rep.check("only the left side moves: the right side is where the nudge "
+                  "path would have left it",
+                  abs(old62[1][0] - c62[1][0]) < 0.005 and abs(old62[2][0] - c62[2][0]) < 0.005,
+                  "right corners %s then %s" % ([old62[1][0], old62[2][0]],
+                                                [c62[1][0], c62[2][0]]))
 
         print("\nthe second batch: seven photos, four of them stretched")
         # The follow-up report — "the auto crop is so bad, worse than before, some
