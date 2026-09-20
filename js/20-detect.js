@@ -1075,19 +1075,23 @@
     for (x=Math.round(w*0.35); x<=Math.min(w-2,Math.round(w*0.99)); x++)
       R.push(bestAtX(x,false));
 
-    var pair=null, pairScore=-Infinity;
+    var pair0=null, pairScore=-Infinity;
     for (var li=0; li<L.length; li++) for (var ri=0; ri<R.length; ri++) {
       var width=R[ri].x-L[li].x;
       if (width<w*0.16 || width>w*0.92) continue;
       var floor=Math.min(L[li].s,R[ri].s);
       var need=width>=w*0.68 ? 6 : (width>=w*0.48 ? 9 : 15);
       if (floor<need) continue;
-      if (Math.min(L[li].far,R[ri].far)<3) continue;
+      var minFar=Math.min(L[li].far,R[ri].far);
+      var mixedSideOK=width<=w*0.76 && (
+        (L[li].far>=3 && R[ri].s>=15 && R[ri].cov>=0.68) ||
+        (R[ri].far>=3 && L[li].s>=15 && L[li].cov>=0.68));
+      if (minFar<3 && !mixedSideOK) continue;
       if (Math.min(L[li].cov,R[ri].cov)<0.55) continue;
       var ps=floor*2+L[li].s+R[ri].s+0.20*(L[li].far+R[ri].far);
       if (ps>pairScore) {
         pairScore=ps;
-        pair={l:L[li],r:R[ri]};
+        pair0={l:L[li],r:R[ri]};
       }
     }
 
@@ -1145,7 +1149,18 @@
 
     // Prefer a modestly farther-out persistent side over a stronger interior
     // seam (fold/shadow/print edge). Each side may move at most 14% of width.
-    function outwardSide(cands, ref, leftSide, otherX) {
+    //
+    // A wide outward move away from a strong, well-covered current side can turn
+    // a tall receipt's own edge into a much wider background seam -- the measured
+    // Pair52 widening. But refusing that move is only correct *inside* the tall
+    // receipt family the boundedWideReceipt tag declares. Outside that family the
+    // refusal trims a good crop back inward (the measured Pair54 regression).
+    //
+    // So this no longer decides: it records that a wide outward geometry exists
+    // and lets the policy parameter decide, because the caller has to compare
+    // both finished geometries before it can know which one is the right page.
+    var wideOutwardSeen=false;
+    function outwardSide(cands, ref, leftSide, otherX, refuseWide) {
       var best=ref, limit=w*0.14;
       for (var oi=0; oi<cands.length; oi++) {
         var e=cands[oi];
@@ -1153,6 +1168,10 @@
         if (Math.abs(e.x-ref.x)>limit) continue;
         var width=leftSide ? otherX-e.x : e.x-otherX;
         if (width<w*0.16 || width>w*0.92) continue;
+        if (width>w*0.76 && ref.s>=15 && ref.cov>=0.68) {
+          wideOutwardSeen=true;
+          if (refuseWide) continue;
+        }
         if (e.s<Math.max(7,ref.s*0.48)) continue;
         if (e.far<Math.max(2.5,ref.far*0.45)) continue;
         if (e.cov<Math.max(0.52,ref.cov-0.12)) continue;
@@ -1160,87 +1179,126 @@
       }
       return best;
     }
-    if (pair) {
-      var ol=outwardSide(L,pair.l,true,pair.r.x);
-      var orr=outwardSide(R,pair.r,false,ol.x);
-      ol=outwardSide(L,ol,true,orr.x);
-      pair={l:ol,r:orr};
-    }
 
-    var top=null, bot=null, mode='pair';
-    if (pair) {
-      top=outerEnd(endCandidates(true,pair.l.x,pair.r.x,8,3),true);
-      bot=outerEnd(endCandidates(false,pair.l.x,pair.r.x,8,3),false);
-      if (!top && !bot) {
-        var inheritedWidth=pair.r.x-pair.l.x;
-        var strongSides=inheritedWidth<=w*0.76 &&
-          Math.min(pair.l.s,pair.r.s)>=9 &&
-          Math.min(pair.l.far,pair.r.far)>=3 &&
-          Math.min(pair.l.cov,pair.r.cov)>=0.62;
-        if (!strongSides) pair=null;
-        else {
-          top={y:0,m:0,s:0,far:0,cov:1};
-          bot={y:h-1,m:0,s:0,far:0,cov:1};
+    // Produce the pair geometry under an explicit outward policy. `pair0` is the
+    // pair the initial detection chose; build() copies it and never mutates it,
+    // so the two policies are evaluated independently.
+    function build(refuseWide) {
+      var pair=pair0;
+      if (pair) {
+        var ol=outwardSide(L,pair.l,true,pair.r.x,refuseWide);
+        var orr=outwardSide(R,pair.r,false,ol.x,refuseWide);
+        ol=outwardSide(L,ol,true,orr.x,refuseWide);
+        pair={l:ol,r:orr};
+      }
+
+      var top=null, bot=null, mode='pair', realEnds=0;
+      if (pair) {
+        top=outerEnd(endCandidates(true,pair.l.x,pair.r.x,8,3),true);
+        bot=outerEnd(endCandidates(false,pair.l.x,pair.r.x,8,3),false);
+        realEnds=(top?1:0)+(bot?1:0);
+        if (!top && !bot) {
+          var inheritedWidth=pair.r.x-pair.l.x;
+          var strongSides=inheritedWidth<=w*0.76 &&
+            Math.min(pair.l.s,pair.r.s)>=9 &&
+            Math.min(pair.l.far,pair.r.far)>=3 &&
+            Math.min(pair.l.cov,pair.r.cov)>=0.62;
+          if (!strongSides) pair=null;
+          else {
+            top={y:0,m:0,s:0,far:0,cov:1};
+            bot={y:h-1,m:0,s:0,far:0,cov:1};
+          }
         }
       }
+
+      if (!pair) {
+        // Frame-side inheritance is much stricter: both horizontal ends must be
+        // strong at near and far probes. This is the only two-edge recovery.
+        top=strongestEnd(endCandidates(true,0,w-1,15,8));
+        bot=strongestEnd(endCandidates(false,0,w-1,15,8));
+        if (!top || !bot) return null;
+        mode='frame-sides';
+      } else {
+        if (!top) top={y:0,m:0,s:0,far:0,cov:1};
+        if (!bot) bot={y:h-1,m:0,s:0,far:0,cov:1};
+      }
+
+      if (bot.y-top.y<h*0.55) return null;
+
+      var left=pair ? {x:pair.l.x,m:pair.l.m} : {x:0,m:0};
+      var right=pair ? {x:pair.r.x,m:pair.r.m} : {x:w-1,m:0};
+
+      function intersect(side, end) {
+        // side: x = side.m*y + b1; end: y = end.m*x + b2
+        var b1=side.x-side.m*h/2;
+        var b2=end.y-end.m*w/2;
+        var den=1-side.m*end.m;
+        if (Math.abs(den)<0.5) return null;
+        var xx=(side.m*b2+b1)/den;
+        var yy=end.m*xx+b2;
+        return {x:JS.clamp(xx,0,w-1),y:JS.clamp(yy,0,h-1)};
+      }
+
+      var q=[
+        intersect(left,top), intersect(right,top),
+        intersect(right,bot), intersect(left,bot)
+      ];
+      if (!q[0] || !q[1] || !q[2] || !q[3]) return null;
+
+      var area=JS.quadArea(q);
+      if (area<w*h*0.10 || area>w*h*0.96) return null;
+      function d(a,b) { return Math.hypot(a.x-b.x,a.y-b.y); }
+      var aw=(d(q[0],q[1])+d(q[3],q[2]))/2;
+      var ah=(d(q[0],q[3])+d(q[1],q[2]))/2;
+      if (ah/Math.max(1,aw)<1.10) return null;
+
+      // Independent interior evidence: this recovery is for pale paper. Checking
+      // both median and upper quartile stops a few isolated highlights from
+      // turning a dark object into a page.
+      var inside=[];
+      for (var iu=1; iu<=6; iu++) for (var iv=1; iv<=6; iv++) {
+        var p=quadPoint(q,iu/7,iv/7);
+        inside.push(sampleAt(gray,w,h,p.x,p.y));
+      }
+      inside.sort(function(a,b){return a-b;});
+      var median=inside[Math.floor(inside.length*0.50)];
+      var paper=inside[Math.floor(inside.length*0.75)];
+      if (median<135 || paper<150) return null;
+
+      var aspect=ah/Math.max(1,aw), areaFrac=area/(w*h);
+      var pairWidth=pair ? (pair.r.x-pair.l.x)/w : 1;
+      var boundedWideReceipt=!!(pair && wideOutwardSeen && refuseWide && realEnds===1 &&
+        pairWidth>=0.70 && pairWidth<=0.84 &&
+        Math.max(pair.l.s,pair.r.s)>=15 &&
+        Math.min(pair.l.s,pair.r.s)>=6 &&
+        ((pair.l.far>=3 && pair.r.s>=15 && pair.r.cov>=0.68) ||
+         (pair.r.far>=3 && pair.l.s>=15 && pair.l.cov>=0.68)) &&
+        Math.min(pair.l.cov,pair.r.cov)>=0.62 &&
+        aspect>=2.20 && areaFrac<=0.74);
+      return {quad:q,paper:paper,light:true,mode:mode,
+              aspect:aspect,area:areaFrac,boundedWideReceipt:boundedWideReceipt};
     }
 
-    if (!pair) {
-      // Frame-side inheritance is much stricter: both horizontal ends must be
-      // strong at near and far probes. This is the only two-edge recovery.
-      top=strongestEnd(endCandidates(true,0,w-1,15,8));
-      bot=strongestEnd(endCandidates(false,0,w-1,15,8));
-      if (!top || !bot) return null;
-      mode='frame-sides';
-    } else {
-      if (!top) top={y:0,m:0,s:0,far:0,cov:1};
-      if (!bot) bot={y:h-1,m:0,s:0,far:0,cov:1};
+    // Two finished geometries, one honest choice.
+    //
+    // The refusal may only be honoured when its own result is ADMISSIBLE: either
+    // it sits inside the ordinary 0.66 area cap, or it is a declared member of
+    // the tall bounded wide receipt family for which that cap is deliberately
+    // waived (boundedWideReceipt). A refused geometry that is over the cap and
+    // does not qualify for the waiver is not a page this detector would ever have
+    // accepted on its own terms -- so the outward geometry is the honest one
+    // there. Measured: Pair52 0.724 (family, kept), Pair53 <=0.66 (admissible,
+    // kept), Pair54 0.6782 (neither, falls through to the outward geometry).
+    //
+    // This is deliberately not a new fitted threshold: it reuses the existing
+    // 0.66 cap and the existing family tag that is already the waiver's condition.
+    var refusedGeom=build(true);
+    if (!wideOutwardSeen) return refusedGeom;
+    if (refusedGeom && (refusedGeom.area<=0.66 || refusedGeom.boundedWideReceipt)) {
+      return refusedGeom;
     }
-
-    if (bot.y-top.y<h*0.55) return null;
-
-    var left=pair ? {x:pair.l.x,m:pair.l.m} : {x:0,m:0};
-    var right=pair ? {x:pair.r.x,m:pair.r.m} : {x:w-1,m:0};
-
-    function intersect(side, end) {
-      // side: x = side.m*y + b1; end: y = end.m*x + b2
-      var b1=side.x-side.m*h/2;
-      var b2=end.y-end.m*w/2;
-      var den=1-side.m*end.m;
-      if (Math.abs(den)<0.5) return null;
-      var xx=(side.m*b2+b1)/den;
-      var yy=end.m*xx+b2;
-      return {x:JS.clamp(xx,0,w-1),y:JS.clamp(yy,0,h-1)};
-    }
-
-    var q=[
-      intersect(left,top), intersect(right,top),
-      intersect(right,bot), intersect(left,bot)
-    ];
-    if (!q[0] || !q[1] || !q[2] || !q[3]) return null;
-
-    var area=JS.quadArea(q);
-    if (area<w*h*0.10 || area>w*h*0.96) return null;
-    function d(a,b) { return Math.hypot(a.x-b.x,a.y-b.y); }
-    var aw=(d(q[0],q[1])+d(q[3],q[2]))/2;
-    var ah=(d(q[0],q[3])+d(q[1],q[2]))/2;
-    if (ah/Math.max(1,aw)<1.10) return null;
-
-    // Independent interior evidence: this recovery is for pale paper. Checking
-    // both median and upper quartile stops a few isolated highlights from
-    // turning a dark object into a page.
-    var inside=[];
-    for (var iu=1; iu<=6; iu++) for (var iv=1; iv<=6; iv++) {
-      var p=quadPoint(q,iu/7,iv/7);
-      inside.push(sampleAt(gray,w,h,p.x,p.y));
-    }
-    inside.sort(function(a,b){return a-b;});
-    var median=inside[Math.floor(inside.length*0.50)];
-    var paper=inside[Math.floor(inside.length*0.75)];
-    if (median<135 || paper<150) return null;
-
-    return {quad:q,paper:paper,light:true,mode:mode,
-            aspect:ah/Math.max(1,aw),area:area/(w*h)};
+    var outwardGeom=build(false);
+    return outwardGeom || refusedGeom;
   }
 
   function recoveredCandidateSet(gray,w,h,rescued,bg,thr) {
@@ -1328,7 +1386,8 @@
       // large frame-attached shapes; reviving those is exactly the stretch bug
       // the normal detector's edge guards were added to refuse.
       if (!edgeRescue || edgeRescue.mode !== 'pair' ||
-          edgeRescue.aspect < 1.80 || edgeRescue.area > 0.66) return null;
+          edgeRescue.aspect < 1.80 ||
+          (edgeRescue.area > 0.66 && !edgeRescue.boundedWideReceipt)) return null;
       return recoveredCandidateSet(gray,w,h,edgeRescue,bg,thr);
     }
 
@@ -1383,6 +1442,70 @@
     var scoreStrict = strict ? scoreQuad(gray, w, h, strict.quad, strict.paper, bg)
                              : -Infinity;
     var pick = strict && scoreStrict > scoreLoose + SWITCH_MARGIN ? strict : loose;
+
+    // Pair53: a valid normal crop can still choose an interior left paper seam.
+    // difficultPageQuad may have useful *side* evidence even when its full quad
+    // is unsafe vertically. Never replace the normal quad wholesale here.
+    //
+    // The refinement is deliberately one-sided and heavily tagged:
+    // - portrait difficult recovery must independently return a side pair;
+    // - its own area must remain under the existing 0.66 safety cap;
+    // - both projected left corners must move outward by 1.5..14% of width;
+    // - difficult right-side disagreement must be small (<=3.5% of width);
+    // - normal candidate must already occupy 50..64% of the frame;
+    // - left-only expansion may add only 3..10% area and stay <=0.66;
+    // - the independent edge score must improve by at least 3 points.
+    // Top, bottom and right coordinates are inherited unchanged from normal.
+    var pickedScore = (pick === strict) ? scoreStrict : scoreLoose;
+    var sideRefineTag = null;
+    var edgeOpinion = difficultPageQuad(gray,w,h);
+    if (edgeOpinion && edgeOpinion.mode === 'pair' && edgeOpinion.area <= 0.66) {
+      var baseQ=pick.quad, edgeQ=edgeOpinion.quad;
+      function edgeXAtY(a,b,yy) {
+        var dy=b.y-a.y;
+        if (Math.abs(dy)<1e-9) return (a.x+b.x)/2;
+        return a.x+(b.x-a.x)*((yy-a.y)/dy);
+      }
+      function convex4(q) {
+        var sign=0;
+        for (var ci=0;ci<4;ci++) {
+          var a0=q[ci], b0=q[(ci+1)%4], c0=q[(ci+2)%4];
+          var z=(b0.x-a0.x)*(c0.y-b0.y)-(b0.y-a0.y)*(c0.x-b0.x);
+          if (Math.abs(z)<1e-6) continue;
+          var zs=z>0?1:-1;
+          if (sign && zs!==sign) return false;
+          sign=zs;
+        }
+        return true;
+      }
+      var lx0=edgeXAtY(edgeQ[0],edgeQ[3],baseQ[0].y);
+      var lx3=edgeXAtY(edgeQ[0],edgeQ[3],baseQ[3].y);
+      var leftMoveTop=baseQ[0].x-lx0;
+      var leftMoveBot=baseQ[3].x-lx3;
+      var rx1=edgeXAtY(edgeQ[1],edgeQ[2],baseQ[1].y);
+      var rx2=edgeXAtY(edgeQ[1],edgeQ[2],baseQ[2].y);
+      var rightDisagree=Math.max(Math.abs(rx1-baseQ[1].x),Math.abs(rx2-baseQ[2].x));
+      var refined=[
+        {x:JS.clamp(lx0,0,w-1),y:baseQ[0].y},
+        {x:baseQ[1].x,y:baseQ[1].y},
+        {x:baseQ[2].x,y:baseQ[2].y},
+        {x:JS.clamp(lx3,0,w-1),y:baseQ[3].y}
+      ];
+      var baseArea=Math.abs(JS.quadArea(baseQ))/(w*h);
+      var refinedArea=Math.abs(JS.quadArea(refined))/(w*h);
+      var areaRatio=refinedArea/Math.max(1e-9,baseArea);
+      var refineScore=scoreQuad(gray,w,h,refined,pick.paper,bg);
+      if (leftMoveTop>=w*0.015 && leftMoveBot>=w*0.015 &&
+          leftMoveTop<=w*0.14 && leftMoveBot<=w*0.14 &&
+          rightDisagree<=w*0.035 &&
+          baseArea>=0.50 && baseArea<=0.64 &&
+          refinedArea<=0.66 && areaRatio>=1.03 && areaRatio<=1.10 &&
+          convex4(refined) && refineScore>=pickedScore+3.0) {
+        pick={quad:refined,paper:pick.paper,light:pick.light};
+        sideRefineTag='left-side-edge-refine';
+      }
+    }
+
     return {
       quad: pick.quad, paper: pick.paper, bg: bg,
       thr: thr, thr2: thr2, mode: mode,
@@ -1390,7 +1513,8 @@
       // Both candidates, not just the winner. "The crop changed" and "the crop
       // changed *because the other mask won*" are different findings, and the
       // loser is the only thing that tells them apart.
-      looseQuad: loose.quad, strictQuad: strict ? strict.quad : null
+      looseQuad: loose.quad, strictQuad: strict ? strict.quad : null,
+      fallback: sideRefineTag
     };
   };
 
