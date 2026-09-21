@@ -1100,10 +1100,23 @@
    * for large bills/invoices that run off the left/right edge.
    */
   function difficultPageQuad(gray, w, h) {
-    // The recovery is intentionally portrait-only. A square generic mixed-tone
-    // scene is one of the detector's safety falsifiers; a sideways document can
-    // still be rotated 90 degrees and retried.
-    if (h < w * 1.25) return null;
+    // The recovery describes a page that fills its frame along the page's own
+    // long axis, so it only describes one that runs the way its frame runs: a
+    // portrait frame wants a portrait quad, and a landscape frame is a page
+    // photographed sideways, so it wants a landscape quad.
+    //
+    // What carries the safety here is that SHAPE, not the frame's aspect on
+    // its own. The falsifier this scope exists for is a generic mixed-tone
+    // scene whose only recovery is a strip crossing its frame -- a montage on
+    // a dark field settles on a 0.22 x 0.97 vertical strip inside a landscape
+    // frame. The shape test below refuses that strip in either orientation.
+    // Measured: removing this scope outright changes exactly that one photo
+    // and makes the strip the crop (area 0.211); requiring the quad to run
+    // along the frame changes none of the 66 corpus photos.
+    //
+    // A page that still does not qualify can be rotated 90 degrees and
+    // retried, which is what the refusal hint says.
+    var wideFrame = h < w * 1.25;
 
     var maxD = Math.max(w, h);
     var work = JS.blurGray(gray, w, h, Math.max(1, Math.round(maxD / 180)));
@@ -1348,7 +1361,11 @@
       function d(a,b) { return Math.hypot(a.x-b.x,a.y-b.y); }
       var aw=(d(q[0],q[1])+d(q[3],q[2]))/2;
       var ah=(d(q[0],q[3])+d(q[1],q[2]))/2;
-      if (ah/Math.max(1,aw)<1.10) return null;
+      // The same shape test, read along whichever axis the frame runs: a
+      // landscape frame must be filled across its width, a portrait frame
+      // down its height. Identical to v1.7.7 whenever the frame is portrait,
+      // which is the only case v1.7.7 could reach.
+      if (wideFrame ? aw/Math.max(1,ah)<1.10 : ah/Math.max(1,aw)<1.10) return null;
 
       // Independent interior evidence: this recovery is for pale paper. Checking
       // both median and upper quartile stops a few isolated highlights from
