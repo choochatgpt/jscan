@@ -178,10 +178,15 @@
              it is named in prose, including JS.MODE_LABELS; a chip in a row of
              chips is an abbreviation, which is what B/W has always been. -->
         <button class="chip" data-mode="auto" type="button">Colour</button>
-        <!-- Receipt had no chip for a while, because Auto all read the page's
-             shape and picked it. Auto all no longer does that, so the chip is
-             the only way in and it is back. -->
-        <button class="chip" data-mode="receipt" type="button">Receipt</button>
+        <!-- Learn replaced the Receipt chip here, at the owner's instruction: he does
+             not use Receipt. Note what this costs, because it is not only a tidy-up —
+             Receipt had no chip for a while and this comment used to say the chip is
+             the ONLY way into that tone mode, so removing it makes Receipt mode
+             UNREACHABLE from the UI. The mode itself is untouched in JS; restoring the
+             chip is all it takes, which is why this swap is its own commit.
+             Not a mode: Learn opens the send-and-redact screen (js/76-learn-ui.js). -->
+        <button id="chip-learn" class="chip" type="button"
+                aria-haspopup="dialog">Learn</button>
         <!-- Not a mode: tapping it sharpens without changing the look, and
              tapping it four times puts back what the look asked for. Its label
              carries the step. It sits in this row because the row it replaced —
@@ -381,5 +386,9 @@
 <script src="js/40-export.js"></script>
 <script src="js/50-ui.js"></script>
 <script src="js/60-init.js"></script>
+<!-- Learn: js/75 is the redaction mask (no DOM at load), js/76 is the screen. js/76 stays
+     inert unless both are present, so load order above it is what matters, not this pair. -->
+<script src="js/75-learn-mask.js"></script>
+<script src="js/76-learn-ui.js"></script>
 </body>
 </html>
