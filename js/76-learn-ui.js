@@ -96,11 +96,24 @@
 
   /* --------------------------------------------------------------------- modal */
 
+  // NO touch-action:none HERE. It belongs on the brush canvas (which needs it so a drag
+  // paints instead of scrolling) and nowhere else. On the overlay it killed touch panning
+  // while the overlay was taller than the screen, so the button row sat below the fold and
+  // could not be scrolled to - the client could paint but never reach Send, and overflow:auto
+  // was useless because panning was disabled. touch-action is inherited, so putting it here
+  // also fought the canvas's own setting.
   var CSS_OVERLAY =
     'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.88);color:#f4f4f4;' +
     'font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;' +
-    'display:flex;flex-direction:column;align-items:center;overflow:auto;padding:14px;' +
-    'box-sizing:border-box;-webkit-user-select:none;user-select:none;touch-action:none';
+    'display:flex;flex-direction:column;align-items:center;overflow-y:auto;' +
+    '-webkit-overflow-scrolling:touch;padding:14px 14px 0;' +
+    'box-sizing:border-box;-webkit-user-select:none;user-select:none';
+  // Sticky, so Send is on screen whatever the photo's aspect ratio does to the height.
+  // The client must never have to hunt for the button that sends a photograph off the phone.
+  var CSS_ROW =
+    'position:sticky;bottom:0;display:flex;gap:8px;flex-wrap:wrap;justify-content:center;' +
+    'width:100%;padding:10px 0 14px;margin-top:auto;' +
+    'background:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,.88) 22%);';
   var CSS_BTN =
     'padding:12px 16px;border-radius:9px;border:1px solid #666;background:#262626;color:#f4f4f4;' +
     'font:inherit;font-weight:600;min-height:44px';
@@ -138,7 +151,7 @@
     var status = h('div', { id: 'learn-status',
       style: 'max-width:420px;min-height:20px;margin:2px 0 8px;opacity:.9' });
 
-    var row = h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;justify-content:center' });
+    var row = h('div', { style: CSS_ROW });
     var clear = h('button', { type: 'button', style: CSS_BTN }, 'Clear brush');
     var nothing = h('button', { type: 'button', style: CSS_BTN }, 'Nothing sensitive here');
     var cancel = h('button', { type: 'button', style: CSS_BTN }, 'Cancel');
@@ -215,15 +228,13 @@
       if (!live || state.busy) return;
       ev.preventDefault();
       var q = norm(ev);
-      var before = JS.learnMask.strokeCount(state.mask) + state.mask.strokes[0].pts.length;
+      // The point count of the LIVE stroke, not strokes[0]. Using strokes[0] measured the
+      // wrong stroke entirely, so a SECOND stroke never registered as having changed and
+      // never painted while being drawn - it only appeared once the finger lifted.
+      var before = live.pts.length;
       JS.learnMask.extendStroke(state.mask, live, q.x, q.y);
-      // Only repaint when a point was actually added: pointermove fires far more often
-      // than the mask changes, and repainting the full image per event janks the brush.
-      var after = JS.learnMask.strokeCount(state.mask) + state.mask.strokes[0].pts.length;
-      if (after !== before) {
-        var st = live;
-        var ctx = c.getContext('2d');
-        drawStroke(ctx, { r: st.r, pts: st.pts.slice(-2) }, c.width, c.height);
+      if (live.pts.length !== before) {
+        drawStroke(c.getContext('2d'), { r: live.r, pts: live.pts.slice(-2) }, c.width, c.height);
       }
     });
     function end() { live = null; repaint(); refreshButtons(); }
@@ -305,7 +316,9 @@
 
     // Fit the brush surface to the screen while keeping the aspect ratio, so what the
     // user paints is a faithful miniature of the pixels that will be redacted.
-    var scale = Math.min(MAX_DISPLAY / oriented.width, (global.innerHeight * 0.5) / oriented.height, 1);
+    // 0.40 rather than 0.5 of the viewport height: the warning block above and the sticky
+    // button row below both come out of the same budget, and Send must not be pushed off.
+    var scale = Math.min(MAX_DISPLAY / oriented.width, (global.innerHeight * 0.40) / oriented.height, 1);
     els.canvas.width = Math.max(1, Math.round(oriented.width * scale));
     els.canvas.height = Math.max(1, Math.round(oriented.height * scale));
 
