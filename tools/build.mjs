@@ -75,18 +75,50 @@ if (missing.length) {
   process.exit(1);
 }
 
-let files = 0;
+const walk = async (dir, acc) => {
+  for (const item of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, item.name);
+    if (item.isDirectory()) await walk(path, acc);
+    else acc.push(path.replace(/\\/g, "/").slice(DIST.length + 1));
+  }
+  return acc;
+};
+
+const copied = [];
 for (const entry of ENTRIES) {
-  if (entry === "index.html") { files += 1; continue; }
-  const walk = async (dir) => {
-    for (const item of await readdir(dir, { withFileTypes: true })) {
-      if (item.isDirectory()) await walk(join(dir, item.name));
-      else files += 1;
-    }
-  };
-  await walk(join(DIST, entry));
+  if (entry === "index.html") { copied.push("index.html"); continue; }
+  await walk(join(DIST, entry), copied);
 }
 
-files += 1; // the generated netlify.toml, which is written rather than copied
+// The opposite failure from the one above, and the one that actually happened:
+// a js/ file that NOTHING references. Scripts load only because a <script> tag
+// says so, so an unreferenced .js is dead code that ships publicly, does
+// nothing, and passes every check above -- because that check only walks
+// outwards from index.html and can never notice a file it never starts from.
+//
+// This is not hypothetical. Learn shipped with js/70-learn.js and
+// js/76-learn-ui.js copied into dist/ and served with HTTP 200, while the
+// Learn button did nothing at all, because neither tag was in index.html. A
+// click with no handler throws nothing and logs nothing, so there was no error
+// to find; the only visible symptom was on the user's phone.
+//
+// A false positive costs one line in ORPHAN_EXEMPT. A false negative costs a
+// feature that is published and dead at the same time.
+const ORPHAN_EXEMPT = new Set([]);
+const referenced = new Set(refs);
+const orphans = copied.filter(
+  (file) => file.startsWith("js/") && file.endsWith(".js") &&
+            !referenced.has(file) && !ORPHAN_EXEMPT.has(file),
+);
 
-console.log(`dist/ rebuilt: ${files} files, ${refs.length} referenced assets all present`);
+if (orphans.length) {
+  console.error(`build failed -- ${orphans.length} script(s) in js/ are referenced by nothing:`);
+  for (const orphan of orphans) console.error(`  ${orphan}`);
+  console.error("Add the <script> tag to index.html, delete the file, or list it in ORPHAN_EXEMPT.");
+  process.exit(1);
+}
+
+const files = copied.length + 1; // + the generated netlify.toml, written rather than copied
+
+console.log(`dist/ rebuilt: ${files} files, ${refs.length} referenced assets all present, ` +
+  `${copied.filter((f) => f.startsWith("js/")).length} scripts all referenced`);
