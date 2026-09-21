@@ -56,13 +56,33 @@
   var hintTimer = null;
   function hint(text, ms) {
     var el = JS.$('stage-hint');
-    if (!text) { el.classList.remove('is-on'); return; }
+    clearTimeout(hintTimer);
+    // Hiding and clearing are the same act. Leaving the last message in a hidden
+    // element means the document holds a sentence the screen is not showing, and
+    // anything that reads the text back — a probe, or the next person reading the
+    // DOM — is told the app is in a state it has already left.
+    if (!text) { el.textContent = ''; el.classList.remove('is-on'); return; }
     el.textContent = text;
     el.classList.add('is-on');
-    clearTimeout(hintTimer);
     hintTimer = setTimeout(function () { el.classList.remove('is-on'); }, ms || 2600);
   }
   JS.hint = hint;
+
+  /* A tab that is left open keeps the JavaScript it loaded — there is no service
+     worker here and nothing re-fetches a plain <script>. So a fix can be
+     published, verified, and still be reported as absent by someone looking at
+     the previous build, which is a diagnosis that costs a day each time it
+     happens. `version.txt` is the server's copy of JS.VERSION; when the two
+     disagree the header says so and offers the reload, which is the whole fix.
+     Called from JS.initVersion, and only ever from there. */
+  JS.markStale = function (served) {
+    var el = JS.$('edit-ver');
+    if (!el) return;
+    el.textContent = 'Update to v' + served;
+    el.disabled = false;
+    el.classList.add('is-stale');
+    el.title = 'v' + JS.VERSION + ' is loaded; v' + served + ' is being served';
+  };
 
   /* ---------------------------------------------------------------- views */
 
@@ -865,10 +885,22 @@
   JS.rotateActive = function (dir) {
     var page = activePage();
     if (!page) return;
+    // The refusal message is advice about a frame, and this replaces the frame.
+    // It used to stay on screen through the rotation it recommends, which reads
+    // as "I did what it said and it still failed" -- and the frame underneath is
+    // frequently one Auto crop reads without trouble. Clear it, and let the
+    // wording of the refusal carry the instruction instead.
+    //
+    // Deliberately NOT re-running Auto crop here. Rotating after a refusal would
+    // have to re-ask the detector in the new orientation, and for a table or a
+    // document on a busy background that can turn a refusal into a crop nobody
+    // asked for -- pair3 does exactly that. A refusal is the safe answer; the
+    // second press is the user's to make, and the message now says so.
     JS.rotateCoarse(page, dir);
     resetView();
     syncEditorChrome();
     renderPreview(true);
+    hint('');
   };
 
   // The adjust block with nothing applied. Eight keys, because that is what a
@@ -1003,7 +1035,7 @@
       renderPreview(true);
       hint(res.found
         ? 'Edges found · tilt corrected ' + res.skew.toFixed(1) + '°'
-        : 'No clear page edge found — rotate 90° and try again');
+        : 'No clear page edge found — rotate 90°, then press Auto crop again');
     } finally {
       hideBusy();
     }
@@ -1348,6 +1380,16 @@
 
     // Page menu.
     JS.$('btn-page-menu').addEventListener('click', function () { openSheet('sheet-menu'); });
+
+    // Only live once JS.markStale has enabled it; a plain reload is the update,
+    // because the files are fetched fresh on every load. Guarded because the
+    // markup and the scripts are cached separately and can arrive one build
+    // apart: an index.html from before this element existed must not take the
+    // whole boot down with it.
+    var verBtn = JS.$('edit-ver');
+    if (verBtn) verBtn.addEventListener('click', function () {
+      if (this.classList.contains('is-stale')) location.reload();
+    });
     JS.$('sheet-menu').addEventListener('click', function (ev) {
       var item = ev.target.closest('.menu-item');
       if (!item) return;

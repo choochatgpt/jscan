@@ -117,6 +117,23 @@ body {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* The build in the editor header. `flex: 0 0 auto` against the name's
+   `0 1 auto`: when the row runs out of width the filename is what gives way,
+   because the version is short, fixed, and the reason it is here at all.
+   Idle it is the same dim text as the home-screen version; only a build that is
+   behind the server's is allowed to look like something to press, so that an
+   ordinary session never has a live-looking control that does nothing. */
+.ver--edit {
+  flex: 0 0 auto; padding: 0; border: 0; background: none; cursor: default;
+  font: inherit; font-size: 11px; color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.ver--edit[disabled] { opacity: 1; }
+.ver--edit.is-stale {
+  cursor: pointer; color: var(--accent); font-weight: 600;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+
 /* ---------- buttons ---------- */
 
 .btn {

@@ -5,9 +5,31 @@
 
 (function (JS) {
 
+  /* Ask the server which build it is serving and say so if it is not this one.
+     Deliberately quiet about every failure: the app is a static, offline-capable
+     page, and no marker, no network, or a marker that arrives as the wrong shape
+     are all "nothing to report", never an error. `no-store` because a cached
+     answer to this question is worse than no answer — it would say the build is
+     current when the whole point is that it may not be. */
+  function initVersion() {
+    if (!window.fetch) return;
+    fetch('version.txt', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.text() : ''; })
+      .then(function (t) {
+        var served = (t || '').trim().replace(/^v/, '');
+        if (served && served !== JS.VERSION) JS.markStale(served);
+      })
+      .catch(function () { /* offline, or no marker: say nothing */ });
+  }
+
   function boot() {
     JS.$('app-version').textContent = 'v' + JS.VERSION;
+    // Guarded like the handler in JS.wire: a cached index.html from the build
+    // before this element existed is a real pairing, not a hypothetical one.
+    var ver = JS.$('edit-ver');
+    if (ver) ver.textContent = 'v' + JS.VERSION;
     JS.wire();
+    initVersion();
 
     // Desktop conveniences: drop or paste images straight in.
     ['dragenter', 'dragover'].forEach(function (t) {

@@ -83,6 +83,13 @@
       <span id="edit-index">1 / 1</span>
       <button id="btn-next" class="icon-btn icon-btn--sm" type="button" aria-label="Next page">›</button>
       <span id="edit-name" class="edit-name"></span>
+      <!-- The build, here as well as on the home screen, because the editor is
+           the screen a bug report is a picture of. It carries the update prompt
+           too: a tab left open across a publish keeps the JavaScript it loaded,
+           so this is the one place that can tell the user the build in front of
+           them is not the build being served. Empty in the markup and filled
+           from JS.VERSION at boot, for the same reason as #app-version. -->
+      <button id="edit-ver" class="ver ver--edit" type="button" disabled></button>
     </div>
     <button id="btn-page-menu" class="icon-btn" type="button" aria-label="Page options">⋯</button>
   </header>
