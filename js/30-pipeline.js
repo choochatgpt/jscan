@@ -186,7 +186,14 @@
                  return p.x.toFixed(3) + ':' + p.y.toFixed(3);
                }).join(',')
              : 'full') +
-           '|' + page.mode + '|' + adjKey;
+           '|' + page.mode + '|' + adjKey +
+           // The Learn redaction mask (js/75-learn-mask.js). It must be in here or a
+           // painted-over name is served a stale cached canvas: the user sees it covered
+           // and the exported bytes still contain it. `key` is a revision counter, so it
+           // is O(1) and moves exactly when the mask moves. Guarded because 30- loads
+           // before 75-, and 'n' means "no mask", which is every page that has not been
+           // through Learn.
+           '|' + (JS.learnMask ? JS.learnMask.key(page.mask) : 'n');
   };
 
   /**
