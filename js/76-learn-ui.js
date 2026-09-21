@@ -46,7 +46,20 @@
   'use strict';
 
   var JS = global.JS = global.JS || {};
-  if (!JS.learn || !JS.learnMask) return;   // transport / mask not loaded: stay inert
+  if (!JS.learn || !JS.learnMask) {
+    // LOUD, not silent. This guard shipped silent in v1.8.0 with the js/70-learn.js script
+    // tag missing from index.html: JS.learn was undefined, so this returned, no click
+    // listener was ever attached to the Learn chip, and pressing it did nothing at all -
+    // no dialog, no error, nothing to debug from. Staying inert is still the right
+    // behaviour (better a dead chip than a half-wired one), but it must say so.
+    if (global.console && global.console.error) {
+      global.console.error('Learn: js/76-learn-ui.js needs JS.learn (js/70-learn.js) and ' +
+        'JS.learnMask (js/75-learn-mask.js). Missing: ' +
+        (!JS.learn ? 'JS.learn ' : '') + (!JS.learnMask ? 'JS.learnMask' : '') +
+        '. Check the script tags in index.html.');
+    }
+    return;
+  }
 
   var MAX_DISPLAY = 380;                     // the brush surface, CSS px
   var els = null;

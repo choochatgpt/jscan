@@ -386,8 +386,15 @@
 <script src="js/40-export.js"></script>
 <script src="js/50-ui.js"></script>
 <script src="js/60-init.js"></script>
-<!-- Learn: js/75 is the redaction mask (no DOM at load), js/76 is the screen. js/76 stays
-     inert unless both are present, so load order above it is what matters, not this pair. -->
+<!-- Learn, all THREE files, in this order: 70 is the transport (JS.learn), 75 is the
+     redaction mask (JS.learnMask), 76 is the screen. js/76 bails out unless BOTH 70 and 75
+     have defined their globals, so omitting any one of them leaves a Learn chip that does
+     nothing and logs nothing.
+     v1.8.0 shipped exactly that bug: the 70 tag was missing, so JS.learn was undefined, 76
+     bailed silently and never attached a click listener to the chip. The live site served
+     js/70-learn.js fine (HTTP 200) - it was simply never referenced. If you add a Learn file,
+     add its tag here, and see the loud guard at the top of js/76-learn-ui.js. -->
+<script src="js/70-learn.js"></script>
 <script src="js/75-learn-mask.js"></script>
 <script src="js/76-learn-ui.js"></script>
 </body>
