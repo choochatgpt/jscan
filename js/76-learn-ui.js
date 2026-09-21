@@ -3,13 +3,14 @@
  * THE FLOW, and why it is in this order
  * -------------------------------------
  *   press Learn
- *     -> if this phone has no token: ask for one FIRST (a warning the user cannot
- *        act on would just be noise, and the token box needs explaining anyway)
  *     -> warning: what is about to be sent, in plain words, with no reassurance
  *     -> the photograph, with a brush already live, so the user redacts BEFORE
  *        anything can leave the device
  *     -> Send, enabled once they have either brushed or said there is nothing
  *        sensitive to brush
+ *     -> only THEN, if this phone has no token: the token box. Asking for a
+ *        credential up front would block the whole screen behind a GitHub errand
+ *        and would hide the brush from anyone who has not set one up yet.
  *     -> the bundle id, and the PC's acknowledgement when it arrives
  *
  * REDAC TION HAPPENS BEFORE UPLOAD, ALWAYS. There is no path in this file that
@@ -252,6 +253,9 @@
       els.status.setAttribute('style', els.statusStyle);
       els.overlay.removeChild(wrap);
       resetForPhoto();
+      // Continue the send they already asked for, but only if they had actually
+      // prepared something - a stray Send must not post an unredacted photo.
+      if (!JS.learnMask.isEmpty(state.mask) || state.declaredNothing) send();
     });
 
     els.overlay.insertBefore(wrap, els.status);
@@ -304,10 +308,15 @@
     if (!els._brushWired) { wireBrush(); els._brushWired = true; }
 
     els.overlay.setAttribute('style', CSS_OVERLAY);
-    if (!JS.learn.hasToken()) { showTokenEntry(); return true; }
-
     repaint();
     refreshButtons();
+    // The token is asked for at Send, not here: the brush has to be reachable
+    // without one, both so the screen is not gated behind a GitHub errand and so
+    // the redaction can be tried before any credential exists on the phone.
+    if (!JS.learn.hasToken()) {
+      els.status.textContent = 'Redact anything private, then press Send — it will ask for ' +
+        'your GitHub token the first time.';
+    }
     return true;
   }
 
