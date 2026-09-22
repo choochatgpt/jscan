@@ -37,6 +37,18 @@
  *    him one tap, and it is the reason this file reports "prompt" as its own outcome
  *    instead of pretending a denial happened.
  *
+ * 4. A NAME FROM THE ANDROID PHOTO PICKER IS NOT A NAME IN HIS FOLDER, AND THIS IS THE
+ *    FACT THE FIRST VERSION OF THIS FILE WAS BUILT WITHOUT. `getFileHandle(name)` only
+ *    helps when `name` is the file's real name. When the client selects from his
+ *    ALBUM the system Photo Picker returns a proxy whose display name is derived from
+ *    the media id — "1000012345.jpg", not "IMG_20240101_120000.jpg" (Chromium issue
+ *    40123366; the proxy is materialised under
+ *    /sdcard/.transforms/synthetic/picker/<pkg>/<id>.jpg). The page is never told the
+ *    original name. So a record built from an album selection holds names that do not
+ *    exist in DCIM/Camera, and no amount of folder access can rescue it: the app has to
+ *    take the photographs FROM the folder once, which is what `pickFiles` below is for.
+ *    `probe` is what lets the app tell the client WHICH of the two situations he is in.
+ *
  * WHAT IS NEVER DONE HERE
  * -----------------------
  * NOTHING IS WRITTEN INTO HIS FOLDER. The picker is opened `mode: 'read'` and no code
@@ -167,6 +179,62 @@
     return global.showDirectoryPicker(opts).then(remember);
   }
 
+  /* ------------------------------------------------- the folder-rooted file picker */
+
+  /* WHY THIS SECOND PICKER EXISTS AT ALL, AND WHY IT IS NOT REDUNDANT.
+   *
+   * A directory handle tells the app WHICH FOLDER, and this file may not enumerate it, so
+   * the app can only reopen a FILENAME it already knows. The directory picker therefore
+   * cannot import anything by itself — it has no names to open.
+   *
+   * On Android the names a page receives from the system PHOTO PICKER are not the names in
+   * the folder: the picker hands back a proxy whose name is derived from the media id
+   * ("1000012345.jpg") rather than the camera's own "IMG_20240101_120000.jpg" (Chromium
+   * 40123366; the proxy lives under /sdcard/.transforms/synthetic/picker/...). A record
+   * built from an album selection therefore holds names that `getFileHandle` will never
+   * resolve inside DCIM/Camera, and NO amount of folder access can fix that — the name is
+   * simply not the file's name.
+   *
+   * The only honest repair is to take the photographs FROM THE FOLDER once. This picker is
+   * `showOpenFilePicker` with `startIn` set to the handle he just granted, so the OS opens
+   * already inside that folder and the files that come back are the folder's own files,
+   * under their REAL names. After one such import every later restore matches by name, and
+   * the picker is never seen again.
+   *
+   * It is the FOLDER picker's sibling, not a replacement: `pick()` chooses where, this
+   * chooses which. Both are read-only, both are only reachable from a tap handler, and
+   * neither can write to his folder. */
+  function filePickerSupported() {
+    return typeof global.showOpenFilePicker === 'function' &&
+           global.isSecureContext !== false;
+  }
+
+  var FILE_TYPES = [{
+    description: 'Photos',
+    accept: { 'image/*': ['.jpg', '.jpeg', '.jpe', '.jfif', '.png', '.webp', '.gif',
+                          '.bmp', '.heic', '.heif', '.avif', '.tif', '.tiff'] }
+  }];
+
+  function pickFiles(dir, multiple) {
+    if (!filePickerSupported()) return Promise.reject(new Error('UNSUPPORTED'));
+    function attempt(withDir) {
+      var opts = { multiple: multiple !== false, types: FILE_TYPES };
+      if (withDir && dir) opts.startIn = dir;
+      return global.showOpenFilePicker(opts);
+    }
+    // `startIn` is an optimisation, never a requirement: a build that refuses a directory
+    // handle as a start location must still be able to open the picker somewhere, or the
+    // one-time setup is impossible and the feature is dead on that phone.
+    return attempt(true).catch(function (e) {
+      if (!dir || String((e && e.name) || '') === 'AbortError') throw e;
+      return attempt(false);
+    }).then(function (handles) {
+      return Promise.all(Array.prototype.map.call(handles || [], function (h) {
+        return h.getFile();
+      }));
+    });
+  }
+
   /* ----------------------------------------------------------------- permission */
 
   /* The outcome of asking for permission, as one of:
@@ -269,6 +337,37 @@
     return step();
   }
 
+  /* Which of these names does the folder actually have?
+   *
+   * ONE `getFileHandle` PER NAME AND NOTHING ELSE — no listing, no glob, no fallback scan.
+   * The folder is never enumerated (see the header), so this is the only way to answer the
+   * question, and it is cheap: one call per saved photo.
+   *
+   * It exists because "the folder is wrong" and "the names are not this folder's names"
+   * need DIFFERENT actions from the client, and before this the app could not tell them
+   * apart — it reported both as "not in that folder any more", which sent him to look for
+   * photographs that were never missing.
+   *
+   * A read failure that is not a NotFound is counted as PRESENT: an unreadable file is not
+   * evidence that the name is wrong, and treating it as wrong would push him into a costly
+   * re-import he does not need. */
+  function probe(handle, names) {
+    var list = (names || []).filter(function (n) { return !!n; });
+    var out = { present: [], absent: [] };
+    if (!handle || typeof handle.getFileHandle !== 'function') return Promise.resolve(out);
+    var i = 0;
+    function step() {
+      if (i >= list.length) return Promise.resolve(out);
+      var n = list[i++];
+      return handle.getFileHandle(n).then(function () { out.present.push(n); }, function (err) {
+        var e = String((err && err.name) || '');
+        if (e === 'NotFoundError' || e === 'TypeMismatchError') out.absent.push(n);
+        else out.present.push(n);
+      }).then(step);
+    }
+    return step();
+  }
+
   /* -------------------------------------------------------------------- report */
 
   /** The folder's OWN display name — "Camera", "Download" — which is what a person
@@ -285,6 +384,10 @@
     pick: pick, remembered: recalled, remember: remember, forget: forget,
     ensurePermission: ensurePermission,
     readByName: readByName, readMany: readMany, typed: typed,
+    /* The folder-rooted file picker and the name probe. Both are read-only, both are
+       used only by the one-time setup in js/78-learn-recall.js, and both are feature
+       detected by their callers. */
+    filePickerSupported: filePickerSupported, pickFiles: pickFiles, probe: probe,
     label: label
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -199,6 +199,10 @@ function makeWorld() {
   const ls = memStore();
   const ss = memStore();
   const picked = { calls: 0, opts: null, handle: null, throws: null };
+  /* The FOLDER-ROOTED FILE PICKER. Recorded exactly like the directory picker, because the
+     question that matters about it is what it was asked for — `startIn` is what makes the
+     files it returns the FOLDER's own files under their real names. */
+  const opened = { calls: 0, opts: null, handles: null, throws: null };
 
   const win = { document: dom.document, localStorage: ls, sessionStorage: ss,
                 indexedDB: idb, isSecureContext: true, File, Blob,
@@ -208,6 +212,12 @@ function makeWorld() {
                   picked.opts = opts;
                   if (picked.throws) return Promise.reject(picked.throws);
                   return Promise.resolve(picked.handle);
+                },
+                showOpenFilePicker: (opts) => {
+                  opened.calls++;
+                  opened.opts = opts;
+                  if (opened.throws) return Promise.reject(opened.throws);
+                  return Promise.resolve(opened.handles || []);
                 } };
   win.window = win;
 
@@ -253,9 +263,18 @@ function makeWorld() {
   JS.app = { pages: [], active: 0 };
 
   return {
-    win, JS, sandbox, dom, ls, ss, idb, st, picked, spy,
+    win, JS, sandbox, dom, ls, ss, idb, st, picked, spy, opened,
     FH: JS.fsHandle,
     RC: JS.recall,
+    hideFilePicker() { delete win.showOpenFilePicker; },
+    showFilePicker() {
+      win.showOpenFilePicker = (opts) => {
+        opened.calls++;
+        opened.opts = opts;
+        if (opened.throws) return Promise.reject(opened.throws);
+        return Promise.resolve(opened.handles || []);
+      };
+    },
     lastHint: () => spy.hints[spy.hints.length - 1] || '',
     hidePicker() { delete win.showDirectoryPicker; },
     showPicker() {
@@ -866,6 +885,324 @@ console.log('\njs/78-learn-recall.js — the detector outcome survives the round
   /* A page with no file record cannot be promised a restore. */
   W.JS.app.pages = [{ w: 1, h: 1 }];
   eq(W.RC.capture(), false, 'a page with no file record is not captured');
+}
+
+/* ============================================================================ */
+console.log('\njs/77-fs-handle.js — the folder-rooted file picker and the name probe');
+
+/* A `FileSystemFileHandle`, as `showOpenFilePicker` returns them. */
+function fhOf(file) {
+  return { kind: 'file', name: file.name, getFile: () => Promise.resolve(file) };
+}
+/* Let a promise chain of unknown depth settle. */
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+{
+  const W = makeWorld();
+  const dir = fakeDir({}, { name: 'Camera' });
+  const f1 = photo('IMG_0001.jpg', 900);
+  W.opened.handles = [fhOf(f1)];
+
+  const files = await W.FH.pickFiles(dir, true);
+  eq(files.length, 1, 'pickFiles resolves with the files behind the handles');
+  eq(files[0].name, 'IMG_0001.jpg', 'and they are Files, with their own names');
+  eq(files[0].size, 900, 'and their real byte counts');
+  eq(W.opened.opts.startIn, dir,
+     'STARTIN IS THE FOLDER HE GRANTED — this is the whole point: the picker opens inside' +
+     ' it, so what comes back are that folder\'s own files under their REAL names');
+  eq(W.opened.opts.multiple, true, 'and it is a multi-select, because he has a stack');
+  ok(W.opened.opts.types && W.opened.opts.types[0].accept['image/*'].indexOf('.heic') !== -1,
+     'the type filter covers what a phone camera writes, heic included');
+
+  /* `startIn` is an optimisation, not a requirement. A build that refuses it must still be
+     able to open the picker, or the one-time setup is impossible on that phone. */
+  let calls = 0;
+  W.win.showOpenFilePicker = (opts) => {
+    calls++;
+    if (calls === 1) {
+      const e = new Error('no startIn for you'); e.name = 'SecurityError';
+      return Promise.reject(e);
+    }
+    eq('startIn' in opts, false, 'the retry drops startIn rather than giving up');
+    return Promise.resolve([fhOf(f1)]);
+  };
+  const again = await W.FH.pickFiles(dir, true);
+  eq(calls, 2, 'a build that refuses startIn gets a second attempt without it');
+  eq(again.length, 1, 'and the setup still completes');
+
+  /* A dismissed picker is not a reason to try again — it is a reason to stop. */
+  let aborts = 0;
+  W.win.showOpenFilePicker = () => {
+    aborts++;
+    const e = new Error('dismissed'); e.name = 'AbortError';
+    return Promise.reject(e);
+  };
+  const aborted = await W.FH.pickFiles(dir, true).then(() => 'resolved', (e) => e.name);
+  eq(aborted, 'AbortError', 'dismissing the OS picker is passed straight back to the caller');
+  eq(aborts, 1, 'and is NOT retried behind his back');
+
+  W.hideFilePicker();
+  eq(W.FH.filePickerSupported(), false, 'filePickerSupported() is a feature detect, like the folder one');
+  const none = await W.FH.pickFiles(dir, true).then(() => 'resolved', (e) => e.message);
+  eq(none, 'UNSUPPORTED', 'and pickFiles rejects rather than throwing into a tap handler');
+  W.showFilePicker();
+}
+
+{
+  const W = makeWorld();
+  const f1 = photo('IMG_0421.JPG', 1500);
+  const dir = fakeDir({
+    'IMG_0421.JPG': { file: f1 },
+    'IMG_9999.JPG': { throw: Object.assign(new Error('busy'), { name: 'NotReadableError' }) }
+  }, { name: 'Camera' });
+
+  const v = await W.FH.probe(dir, ['IMG_0421.JPG', 'IMG_9999.JPG', 'IMG_0001.JPG', '']);
+  eq(v.present.join(','), 'IMG_0421.JPG,IMG_9999.JPG',
+     'a name that is there is present, and A NAME THAT COULD NOT BE READ IS PRESENT TOO — an' +
+     ' unreadable file is not evidence that the name is wrong, and treating it as wrong would' +
+     ' push him into a re-import he does not need');
+  eq(v.absent.join(','), 'IMG_0001.JPG', 'and only a genuine NotFound counts as absent');
+  eq(dir._calls.join('|'), 'open:IMG_0421.JPG|open:IMG_9999.JPG|open:IMG_0001.JPG',
+     'ONE getFileHandle PER NAME AND NOTHING ELSE — the folder is never listed');
+  ok(dir._calls.every((c) => c.indexOf('FORBIDDEN') === -1),
+     'and no enumerate/write method was ever reached');
+
+  const empty = await W.FH.probe(null, ['x']);
+  eq(empty.present.length + empty.absent.length, 0, 'probe with no handle is empty, not a throw');
+}
+
+/* ============================================================================ */
+console.log('\njs/78-learn-recall.js — the folder step is reachable with NOTHING saved');
+
+{
+  const W = makeWorld();
+  eq(W.RC.hasSaved(), false, 'a fresh phone has nothing saved');
+  eq(W.RC.offer(), true,
+     'THE BANNER STILL COMES UP. This is the client\'s bug: the setup was only reachable from' +
+     ' a saved record, so the one state that needed it could never reach it');
+  const bar = find(W.dom.home, (n) => n.id === 'recall-banner')[0];
+  ok(/pick the folder your photos are in/.test(bar.children[0].textContent),
+     'and it offers the folder step in words: ' + JSON.stringify(bar.children[0].textContent));
+  eq(byText(bar, 'Choose my photo folder')._act, W.RC.chooseFolder, 'with the setup as its action');
+  ok(byText(bar, 'Forget it').hidden,
+     'and "Forget it" is HIDDEN, because there is no record to forget — a button with nothing' +
+     ' behind it is how a banner looks broken');
+}
+
+{
+  const W = makeWorld();
+  W.hidePicker();
+  eq(W.RC.offer(), false,
+     'with no record and no folder API there is genuinely nothing to offer, so the banner' +
+     ' stays down rather than showing a button that cannot work');
+}
+
+{
+  /* The one-time setup on a phone with nothing saved: two taps, and the SECOND one is the
+     one that cannot be removed, because the folder picker consumed the first. */
+  const W = makeWorld();
+  const dir = fakeDir({}, { name: 'Camera' });
+  W.picked.handle = dir;
+  W.JS.addFiles = (files) => {
+    W.spy.added.push(files.slice());
+    W.JS.app.pages = files.map(newPage);
+    W.RC.onFilesAdded();
+    return Promise.resolve();
+  };
+  W.RC.offer();
+  W.opened.calls = 0;
+  await W.RC.chooseFolder();
+
+  eq(W.opened.calls, 0,
+     'THE FILE PICKER IS NOT OPENED IN THE SAME TAP. showDirectoryPicker consumed the user' +
+     ' activation, so calling showOpenFilePicker from the continuation would throw' +
+     ' SecurityError on a real browser — a button that silently does nothing');
+  eq(W.RC.currentFolder(), dir, 'but the folder is remembered');
+
+  const bar = find(W.dom.home, (n) => n.id === 'recall-banner')[0];
+  ok(/Camera/.test(bar.children[0].textContent), 'the banner names the folder he chose');
+  ok(byText(bar, 'Choose my photos in that folder') !== null,
+     'and puts the second step on a button, for a real tap: ' + JSON.stringify(bar.children[0].textContent));
+
+  W.opened.handles = [fhOf(photo('IMG_0001.jpg', 900)), fhOf(photo('IMG_0002.jpg', 700))];
+  byText(bar, 'Choose my photos in that folder').click();
+  await flush(); await flush(); await flush();
+
+  eq(W.opened.opts.startIn, dir, 'THE FILE PICKER OPENS INSIDE THE FOLDER HE JUST GRANTED');
+  eq(W.spy.added[0].map((f) => f.name).join(','), 'IMG_0001.jpg,IMG_0002.jpg',
+     'and the photos come back under the FOLDER\'s own names');
+
+  const rec = JSON.parse(W.ls.getItem('jscanner.recall.last'));
+  eq(rec.pages.map((p) => p.name).join(','), 'IMG_0001.jpg,IMG_0002.jpg',
+     'AND THE RECORD IS REWRITTEN FROM THOSE NAMES. Without this the one-time setup repairs' +
+     ' nothing and the next launch is back where it started');
+  eq(rec.folder, 'Camera', 'and it remembers which folder they came from');
+  eq(rec.where.kind, 'file-input', 'with nothing invented about a path the browser never gave');
+}
+
+/* ============================================================================ */
+console.log('\njs/78-learn-recall.js — an album-picked record cannot be reopened by name');
+
+{
+  /* The client's actual state: a record written from an ALBUM selection, whose names came
+     from the Android Photo Picker and therefore exist in no folder on the device. */
+  const W = makeWorld();
+  const synth = [photo('1000012345.jpg', 900), photo('1000012346.jpg', 700)];
+  W.JS.app.pages = synth.map(editedPage);
+  W.RC.capture();
+  eq(JSON.parse(W.ls.getItem('jscanner.recall.last')).pages[0].name, '1000012345.jpg',
+     'the record faithfully holds the name the phone gave the page');
+
+  const dir = fakeDir({ 'IMG_0001.jpg': { file: photo('IMG_0001.jpg', 900) } }, { name: 'Camera' });
+  W.picked.handle = dir;
+  W.JS.addFiles = (files) => {
+    W.spy.added.push(files.slice());
+    W.JS.app.pages = files.map(newPage);
+    W.RC.onFilesAdded();
+    return Promise.resolve();
+  };
+  W.RC.offer();
+  W.spy.hints.length = 0;
+  W.opened.calls = 0;
+  await W.RC.chooseFolder();
+
+  eq(dir._calls.filter((c) => c.indexOf('open:') === 0).length, 2,
+     'the app opens each saved name in the folder — and that is all it does with the folder');
+  ok(dir._calls.every((c) => c.indexOf('FORBIDDEN') === -1),
+     'the folder is never listed and never written to, even here');
+
+  const bar = find(W.dom.home, (n) => n.id === 'recall-banner')[0];
+  const text = bar.children[0].textContent;
+  ok(/1000012345\.jpg/.test(text) || /none of your 2 saved/i.test(text),
+     'THE BANNER REPORTS THE ACTUAL FAILURE: ' + JSON.stringify(text));
+  ok(/album/i.test(text) && /IMG_0001\.jpg/.test(text),
+     'and names the real cause — the album picker hands over a copy called 1000012345.jpg' +
+     ' instead of the camera\'s own IMG_0001.jpg, a name that has never existed in the folder');
+  ok(/nothing is copied off/i.test(text) === false && text.length > 0, 'and says it where he can see it');
+  ok(W.RC.currentNotice().length > 0,
+     'THE SENTENCE IS ON THE HOME SCREEN. JS.hint writes into #stage-hint, which is inside' +
+     ' the EDITOR view — every message this module used to compose was drawn where he could' +
+     ' not see it, which is why a total failure looked like nothing at all');
+
+  const repair = byText(bar, 'Choose the photos from that folder');
+  ok(repair !== null, 'the repair is a BUTTON, not a paragraph: ' + JSON.stringify(text.slice(0, 120)));
+  ok(byText(bar, 'Pick them from my album again') !== null, 'and the old road is still offered');
+
+  /* And the repair really repairs. */
+  W.opened.handles = [fhOf(photo('IMG_0001.jpg', 900)), fhOf(photo('IMG_0002.jpg', 1200))];
+  W.spy.added.length = 0;
+  repair.click();
+  await flush(); await flush(); await flush();
+
+  eq(W.opened.opts.startIn, dir, 'the repair opens the picker inside the folder');
+  eq(W.spy.added.length, 1, 'and imports from it');
+  const rec = JSON.parse(W.ls.getItem('jscanner.recall.last'));
+  eq(rec.pages.map((p) => p.name).join(','), 'IMG_0001.jpg,IMG_0002.jpg',
+     'AND THE SYNTHETIC NAMES ARE GONE FROM THE RECORD — which is the whole repair. The next' +
+     ' launch opens these names inside that folder and needs no picker');
+  eq(rec.folder, 'Camera', 'with the folder still remembered');
+}
+
+{
+  /* A partial miss is NOT the rename: most names resolved, so the folder is right and the
+     one absent name is simply gone. It must not send him into a costly re-import. */
+  const W = makeWorld();
+  const f1 = photo('IMG_0001.jpg', 900);
+  const f2 = photo('IMG_0002.jpg', 700);
+  W.JS.app.pages = [editedPage(f1), editedPage(f2)];
+  W.RC.capture();
+  const dir = fakeDir({ 'IMG_0001.jpg': { file: f1 } }, { name: 'Camera' });
+  W.RC.setFolder(dir);
+  W.JS.app.pages = [newPage(f1), newPage(f2)];
+  W.JS.addFiles = (files) => {
+    W.JS.app.pages = files.map(newPage);
+    W.RC.onFilesAdded();
+    return Promise.resolve();
+  };
+  await W.RC.reconcile(JSON.parse(W.ls.getItem('jscanner.recall.last')), dir);
+  ok(/Put your edits back on 1 of 2 photos/.test(W.lastHint()),
+     'a partial miss goes down the ordinary read path: ' + JSON.stringify(W.lastHint()));
+  ok(/Not in that folder: IMG_0002\.jpg/.test(W.lastHint()), 'and names the one that is gone');
+  ok(/album/.test(W.RC.currentNotice()) === false,
+     'and does NOT claim the phone renamed anything — that would be a diagnosis the evidence' +
+     ' does not support');
+}
+
+{
+  /* Where the browser has no folder-rooted file picker, the repair must not be offered as a
+     dead button. The diagnosis still stands. */
+  const W = makeWorld();
+  W.JS.app.pages = [editedPage(photo('1000012345.jpg', 900))];
+  W.RC.capture();
+  const dir = fakeDir({ 'IMG_0001.jpg': { file: photo('IMG_0001.jpg', 900) } }, { name: 'Camera' });
+  W.picked.handle = dir;
+  W.hideFilePicker();
+  W.RC.offer();
+  await W.RC.chooseFolder();
+  const bar = find(W.dom.home, (n) => n.id === 'recall-banner')[0];
+  eq(byText(bar, 'Choose the photos from that folder'), null,
+     'no repair button when the API behind it is missing');
+  ok(byText(bar, 'Pick the photos again') !== null, 'the honest fallback is what is offered instead');
+  W.showFilePicker();
+}
+
+/* ============================================================================ */
+console.log('\njs/78-learn-recall.js — a folder that will not re-grant is not a loop');
+
+{
+  /* Chrome for Android does not implement persisted permissions (crbug 40101963), so
+     whether a remembered folder can be re-granted after the browser has restarted is NOT
+     settled by anything reachable from a desktop. What IS settled is that the app must not
+     sit on a button demanding "one more tap" forever — the client's original complaint was
+     a button that did not do what it said. */
+  const W = makeWorld();
+  const f1 = photo('IMG_0001.jpg', 900);
+  const dir = fakeDir({ 'IMG_0001.jpg': { file: f1 } },
+                      { name: 'Camera', perm: 'prompt', requestResult: 'prompt' });
+  W.JS.app.pages = [editedPage(f1)];
+  W.RC.capture();
+  W.RC.setFolder(dir);
+  W.RC.offer();
+
+  await W.RC.restoreFromFolder();
+  ok(dir._calls.indexOf('requestPermission:read') !== -1,
+     'the tap does ask for the grant — that is the one tap the platform requires');
+  ok(/one more tap/i.test(W.RC.currentNotice()),
+     'a FIRST "prompt" gets one retry, honestly labelled: ' + JSON.stringify(W.RC.currentNotice()));
+  let bar = find(W.dom.home, (n) => n.id === 'recall-banner')[0];
+  eq(byText(bar, 'Reload my last selection')._act, W.RC.restoreFromFolder,
+     'with the same button, because one retry is worth having');
+
+  const before = dir._calls.length;
+  await W.RC.restoreFromFolder();
+  eq(dir._calls.length > before, true, 'the second tap really did ask again');
+  ok(/did not hand back access/.test(W.RC.currentNotice()),
+     'a SECOND "prompt" stops the loop rather than asking a third time: ' +
+     JSON.stringify(W.RC.currentNotice()));
+  ok(/Choose the folder once more/.test(W.RC.currentNotice()) &&
+     /pick the photos again/.test(W.RC.currentNotice()),
+     'and names both roads that still work, instead of one that does not');
+  bar = find(W.dom.home, (n) => n.id === 'recall-banner')[0];
+  eq(byText(bar, 'Pick the photos again')._act, W.RC.startRepick,
+     'the album is a live button, not a paragraph');
+  eq(byText(bar, 'Choose my photo folder')._act, W.RC.chooseFolder,
+     'and so is choosing the folder again — the picker reopens where he left it');
+
+  /* And a plain refusal is its own outcome, not a missing folder and not a retry. */
+  const W2 = makeWorld();
+  const f2 = photo('IMG_0001.jpg', 900);
+  const dir2 = fakeDir({ 'IMG_0001.jpg': { file: f2 } }, { name: 'Camera', perm: 'denied' });
+  W2.JS.app.pages = [editedPage(f2)];
+  W2.RC.capture();
+  W2.RC.setFolder(dir2);
+  W2.RC.offer();
+  await W2.RC.restoreFromFolder();
+  eq(dir2._calls.indexOf('requestPermission:read'), -1,
+     'a DENIED handle is not re-asked — repeating a dismissed prompt is how a page looks broken');
+  ok(/did not let me back into that folder/.test(W2.RC.currentNotice()),
+     'and the refusal is reported as a refusal: ' + JSON.stringify(W2.RC.currentNotice()));
+  ok(/not in that folder/i.test(W2.RC.currentNotice()) === false,
+     'NEVER as a missing folder — those two need different actions from him');
 }
 
 /* ============================================================================ */

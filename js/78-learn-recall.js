@@ -51,6 +51,17 @@
  *     BANNER rather than opening a picker and letting him wonder why;
  *   - nothing here is claimed to work on a browser it has not been checked on.
  *
+ * ONE MORE THING ABOUT ANDROID THAT IS NOT ASSUMED EITHER WAY. Chrome does not implement
+ * PERSISTED permissions on Android — `chrome_file_system_access_permission_context.cc`
+ * returns false under `BUILDFLAG(IS_ANDROID)` with `TODO(crbug.com/40101963)`, so a folder
+ * grant is not written to disk. The handle itself still survives in IndexedDB, but whether
+ * `requestPermission()` can re-grant it after the browser has been restarted is NOT settled
+ * here and cannot be settled from a desktop — it is the one question only his phone can
+ * answer. The code therefore does not depend on the answer: it asks, and when the answer
+ * comes back "prompt" twice running it stops asking and offers the two roads that still
+ * work (choose the folder again; pick from the album) instead of leaving a button that
+ * demands one more tap forever. See `restoreFromFolder` and `addRepairButton`.
+ *
  * RESTORING IS OPT-IN AND ALWAYS WILL BE
  * --------------------------------------
  * One prompt, once, on the sessions where something was saved, and a "Not now" that
@@ -84,8 +95,11 @@
   var els = null;
   var pending = false;      // a re-pick or a folder read is in flight: match, don't capture
   var pendingNote = null;   // the folder read's own verdict per file, folded into the hint
+  var reseed = false;       // this import is a folder import: the record must be rewritten
   var folder = null;        // the remembered FileSystemDirectoryHandle, or null
   var noticed = false;      // "Not now" pressed, or already offered, this session
+  var notice = '';          // the sentence currently shown in the banner, if any
+  var promptStrikes = 0;    // consecutive "prompt" outcomes; see restoreFromFolder
 
   /* ------------------------------------------------------------------ storage */
 
@@ -165,6 +179,8 @@
     try { if (s) s.removeItem(KEY); } catch (e) { /* nothing to do */ }
     hidePrompt();
     folder = null;
+    notice = '';
+    reseed = false;
     if (JS.fsHandle) { try { JS.fsHandle.forget(); } catch (e) { /* nothing to do */ } }
     return true;
   }
@@ -422,7 +438,8 @@
       matched: matched, missed: missed, restored: restored,
       total: info ? rec.pages.length : pages.length
     };
-    if (JS.hint) JS.hint(buildMessage(rec, info, r));
+    r.message = buildMessage(rec, info, r);
+    if (JS.hint) JS.hint(r.message);
     return r;
   }
 
@@ -436,41 +453,65 @@
     var rec = load();
     if (!rec) return Promise.resolve(false);
     if (!folder || !JS.fsHandle) { hidePrompt(); return Promise.resolve(false); }
+    notice = '';
 
     if (JS.showBusy) JS.showBusy('Opening your photos…');
     return JS.fsHandle.ensurePermission(folder).then(function (state) {
       if (state !== 'granted') {
         if (JS.hideBusy) JS.hideBusy();
+        /* "prompt" MEANS THE QUESTION COULD NOT BE PUT, and there are two reasons for that:
+           the tap's activation had already been spent when the call ran (transient, worth
+           exactly one more try), or this browser will not re-grant a remembered folder at
+           all. Chrome for Android does not implement persisted permissions — the grant is
+           not written to disk (chrome_file_system_access_permission_context.cc returns false
+           under IS_ANDROID, TODO(crbug.com/40101963)) — so the second reading is a real
+           possibility on the client's phone and NOT something to loop on. After one retry the
+           banner stops offering the tap and offers the two roads that still work. A button
+           that asks for "one more tap" forever is the failure this file exists to remove. */
+        if (state === 'prompt' && ++promptStrikes < 2) {
+          say('That folder needs one more tap. Press “Reload my last selection” again.');
+          paint(rec, null);
+          showPrompt();
+          return false;
+        }
+        promptStrikes = 0;
         /* A refusal is a real outcome and gets its own words. It is NOT reported as a
            missing folder, and it is not retried behind his back: the banner comes back
            with the re-pick offered first, so he is never stuck on a button that has
            stopped working. */
-        if (JS.hint) {
-          JS.hint(state === 'denied'
-            ? 'Android did not let me back into that folder — pick the photos again and your edits still come back.'
-            : 'That folder needs one more tap. Press “Reload my last selection” again.');
-        }
-        paint(rec, { repickFirst: state === 'denied' });
+        say(state === 'denied'
+          ? 'Android did not let me back into that folder — pick the photos again and your edits still come back.'
+          : 'Android did not hand back access to that folder, and asking again did not work. ' +
+            'Choose the folder once more — the picker reopens where you left it — or pick the ' +
+            'photos again and your edits still come back.');
+        paint(rec, { repickFirst: true });
         showPrompt();
         return false;
       }
+      promptStrikes = 0;
       return JS.fsHandle.readMany(folder, rec.pages, function (i, n) {
         if (JS.showBusy) JS.showBusy('Reading ' + i + ' of ' + n + '…');
       }).then(function (info) {
         if (JS.hideBusy) JS.hideBusy();
         if (!info.files.length) {
-          /* Nothing came back. Say precisely what was wrong, because the two causes need
-             different actions from him: the folder is wrong (choose another) or the names
-             this phone gave us are not the names in the folder (pick the photos again —
-             which is the normal outcome when an Android selection came through the system
-             photo picker rather than the folder). */
+          /* Nothing came back, and the two causes need different actions from him: the
+             folder is wrong, or the names this phone gave us are not the names in the
+             folder. When EVERY name is missing the second reading is much the likelier
+             one, and it has a fix of its own — see `nameMismatch`. */
           var why = info.missing.length
             ? (info.missing.length + ' of your saved photos are not in “' +
                JS.fsHandle.label(folder) + '” any more')
             : 'Nothing in “' + JS.fsHandle.label(folder) + '” matched the saved file names';
-          if (JS.hint) JS.hint(why + ' — nothing was changed.');
+          say(why + ' — nothing was changed.');
           paint(rec, { repickFirst: true });
           showPrompt();
+          /* THE BUTTON THAT ACTUALLY FIXES IT. "Not in that folder any more" is true and,
+             on a phone whose album picker renames files, permanently useless — the
+             photograph was never missing and no amount of looking will find that name. The
+             repair is offered alongside the diagnosis, never instead of it. */
+          if (rec.pages.length && info.missing.length === rec.pages.length) {
+            addRepairButton(false);
+          }
           return false;
         }
         pending = true;
@@ -481,9 +522,148 @@
     }).catch(function (e) {
       if (JS.hideBusy) JS.hideBusy();
       if (global.console && global.console.error) global.console.error('Recall: folder read failed', e);
-      if (JS.hint) JS.hint('Could not read that folder — pick the photos again and your edits still come back.');
+      say('Could not read that folder — pick the photos again and your edits still come back.');
       paint(rec, { repickFirst: true });
       showPrompt();
+      return false;
+    });
+  }
+
+  /* ------------------------------------------------------------------ the repair */
+
+  /* THE NAMES ARE NOT THIS FOLDER'S NAMES.
+   *
+   * The folder is right, the permission is right, and every single saved name is missing
+   * from it. There is exactly one common cause and it is not something the client did: on
+   * Android, when he picks from his ALBUM, the system Photo Picker hands the page a PROXY
+   * of each photograph whose name comes from the media id — "1000012345.jpg" — and never
+   * the camera's own "IMG_20240101_120000.jpg". No browser API gives a page the original
+   * name back (Chromium issue 40123366). So the record faithfully stored a name that has
+   * never existed inside DCIM/Camera, and `getFileHandle` will not find it there, today or
+   * on any later launch. Left alone, this is a button that fails identically forever.
+   *
+   * The repair is to take the photographs FROM THE FOLDER once. `pickFiles` opens the OS
+   * file picker already inside that folder (`startIn`), so what comes back are the
+   * folder's own files under their REAL names; the import that follows writes a NEW record
+   * built from those names, and every later restore matches.
+   *
+   * THE COST IS STATED, NOT HIDDEN: his crops cannot be matched to photographs whose names
+   * changed, so they have to be done once more. It is said in the banner BEFORE he taps,
+   * because a re-import that quietly threw away the work on six cropped receipts would be
+   * a worse bug than the one being fixed. */
+  /* The sentence that names the real cause. Returned, not painted, so the two callers can
+     put it where each of them needs it. */
+  function renameNote() {
+    return 'That is what an album selection does: this phone hands the app a copy called ' +
+      'something like 1000012345.jpg instead of your camera’s own IMG_0001.jpg, and that ' +
+      'name has never existed inside the folder — so it is not that your photos are gone. ' +
+      'Choose them FROM THE FOLDER once and from then on one tap reopens them with no ' +
+      'picker. Your crops cannot be matched to photos whose names changed, so they will ' +
+      'need doing one more time.';
+  }
+
+  /* Put two NAMED actions on the banner, carrying whatever `notice` currently says.
+   *
+   * Every repair path ends here, so a button is never relabelled without its action being
+   * rewritten in the same breath — the failure `act()` exists to prevent. A no-op when
+   * there is no banner: a headless caller still gets the sentence from `say`, and the
+   * wiring it has nowhere to put is simply not attempted. */
+  function actions(primary, primaryFn, secondary, secondaryFn, hideDrop) {
+    if (!els) return false;
+    act(els.primary, primary, primaryFn);
+    act(els.secondary, secondary || '', secondaryFn || null);
+    els.drop.hidden = !!hideDrop;
+    els.later.hidden = false;
+    if (notice) els.text.textContent = notice;
+    els.bar.setAttribute('style', CSS_BANNER);
+    return true;
+  }
+
+  /* ADDITIVE, never a replacement: it leaves the diagnosis and the action already on the
+     banner in place where it can, because "the folder is wrong" and "the phone renamed your
+     photos" are both still in play and only he can tell them apart. */
+  function addRepairButton(primaryIsRepair) {
+    if (!els) return false;
+    notice = notice ? notice + ' ' + renameNote() : renameNote();
+    /* NO FOLDER-ROOTED FILE PICKER MEANS THE ONE REPAIR THAT WORKS CANNOT BE OFFERED. Leaving
+       the banner as it was would leave "Reload my last selection" on screen to fail in
+       exactly the same way on every tap, for as long as he keeps pressing it — the
+       button-that-fails-identically-forever this file exists to remove. The album is then the
+       only road in, and the banner says so. */
+    if (!JS.fsHandle || !JS.fsHandle.filePickerSupported()) {
+      notice += ' This browser cannot open a file list inside a folder, so pick them from ' +
+        'your album again — your crops come back for the ones that match.';
+      return actions('Pick the photos again', startRepick, '', null, false);
+    }
+    var open = function () { folderImport(folder); };
+    if (primaryIsRepair) return actions('Choose the photos from that folder', open,
+                                        'Pick them from my album again', startRepick, false);
+    return actions(els.primary.textContent, els.primary._act,
+                   'Choose the photos from that folder', open, false);
+  }
+
+  /* THE SECOND TAP, AND WHY IT CANNOT BE ENGINEERED AWAY.
+   *
+   * `showDirectoryPicker` consumes the tap's transient user activation, so
+   * `showOpenFilePicker` called from the continuation would throw SecurityError on a real
+   * browser. Calling it anyway would produce a button that appears to do nothing — which
+   * is the class of bug this whole file exists to remove. The banner is therefore
+   * repainted with the second step ON it, and it waits for a genuine tap. */
+  function askForFolderImport(handle) {
+    var label = handle && handle.name ? String(handle.name) : 'that folder';
+    say('Folder “' + label + '” remembered. Now choose the photos inside it once: the ' +
+        'picker opens in that folder, and from then on one tap brings them back with no ' +
+        'picker at all.');
+    paint(load(), null);
+    if (!JS.fsHandle || !JS.fsHandle.filePickerSupported()) {
+      return actions('Pick them from my album', startRepick, '', null, true);
+    }
+    return actions('Choose my photos in that folder', function () { folderImport(folder); },
+                   'Pick them from my album', startRepick, true);
+  }
+
+  /* ONE-TIME SETUP: IMPORT STRAIGHT OUT OF THE FOLDER.
+   *
+   * This is the step that makes the folder route work on a phone whose album picker renames
+   * things, and it is also the best way in for someone setting the folder up before any
+   * selection exists — the record it writes is built from the folder's own names, so the
+   * very next launch can reopen them with no picker.
+   *
+   * MUST BE REACHED FROM A TAP. `showOpenFilePicker` needs transient user activation, so
+   * every path that wants this REPAINTS THE BANNER and waits, rather than calling it from
+   * a promise continuation where it would silently do nothing. */
+  function folderImport(handle) {
+    if (!JS.fsHandle || !JS.fsHandle.filePickerSupported()) {
+      say('This browser cannot open a file list inside a folder — pick the photos again and ' +
+        'your crops still come back.');
+      paint(load(), { repickFirst: true });
+      showPrompt();
+      return Promise.resolve(false);
+    }
+    notice = '';
+    if (JS.showBusy) JS.showBusy('Opening that folder…');
+    return JS.fsHandle.pickFiles(handle, true).then(function (files) {
+      if (JS.hideBusy) JS.hideBusy();
+      var imgs = (files || []).map(function (f) {
+        return JS.fsHandle.typed ? JS.fsHandle.typed(f) : f;
+      }).filter(function (f) { return f && f.type && f.type.indexOf('image/') === 0; });
+      if (!imgs.length) return false;
+      pending = true;
+      pendingNote = null;
+      /* THE RECORD IS REWRITTEN FROM WHAT WAS JUST IMPORTED. Without this the one-time
+         repair repairs nothing: the import would restore nothing and the old, unusable
+         names would be re-saved on the way out. See `onFilesAdded`. */
+      reseed = true;
+      hidePrompt();
+      return JS.addFiles(imgs);
+    }, function (e) {
+      if (JS.hideBusy) JS.hideBusy();
+      // Dismissing the OS picker is not a failure and says nothing.
+      if (String((e && e.name) || '') !== 'AbortError') {
+        say('This browser would not open that folder’s file list — pick the photos again.');
+        paint(load(), { repickFirst: true });
+        showPrompt();
+      }
       return false;
     });
   }
@@ -492,20 +672,55 @@
      ALREADY granted for this session, so the restore happens in the same tap — he picks
      the folder once and his edits come back before he has lifted his finger. */
   function chooseFolder() {
+    // NO RECORD IS NOT A REASON TO REFUSE. The setup has to be able to run before there is
+    // anything to load — that is the state the client was stuck in.
+    if (!JS.fsHandle || !JS.fsHandle.supported()) return Promise.resolve(false);
     var rec = load();
-    if (!rec || !JS.fsHandle || !JS.fsHandle.supported()) return Promise.resolve(false);
+    notice = '';
+    promptStrikes = 0;
     return JS.fsHandle.pick().then(function (h) {
       folder = h;
-      return restoreFromFolder();
+      if (!rec) return askForFolderImport(h);
+      return reconcile(rec, h);
     }, function (e) {
       // AbortError is him dismissing the OS picker. Not a failure — put the banner back
       // and say nothing, because he knows what he just did.
       if (String((e && e.name) || '') !== 'AbortError') {
-        if (JS.hint) JS.hint('This browser would not open a folder picker.');
+        say('This browser would not open a folder picker.');
+        paint(rec, null);
       }
       showPrompt();
       return false;
     });
+  }
+
+  /* THE FOLDER IS GRANTED. ARE THE NAMES WE SAVED NAMES THIS FOLDER HAS?
+   *
+   * Skipping this question is what made the folder route fail SILENTLY: the app opened
+   * every saved name, got NotFoundError for all of them, and reported "not in that folder
+   * any more" — which is true and useless, because the file was never missing. Asking it
+   * first costs one `getFileHandle` per saved photo, needs no listing, and lets the app
+   * tell "wrong folder" apart from "the phone renamed your photos", which call for two
+   * completely different actions. */
+  function reconcile(rec, handle) {
+    if (!JS.fsHandle.probe) return restoreFromFolder();
+    return JS.fsHandle.probe(handle, rec.pages.map(function (p) { return p.name; }))
+      .then(function (v) {
+        if (!v || !v.absent.length) return restoreFromFolder();
+        if (v.present.length) return restoreFromFolder();   // partial: the read reports the rest
+        /* EVERY saved name is absent from a folder he has just deliberately chosen, so it
+           is not a wrong-folder mistake — it is the rename. This is the case that used to
+           report "not in that folder any more" and then ask him to pick from the album
+           again, which put him straight back into the same trap. */
+        say('None of your ' + rec.pages.length + ' saved photo name' +
+            (rec.pages.length === 1 ? '' : 's') + ' exist in “' +
+            (folder && JS.fsHandle ? JS.fsHandle.label(folder) : 'that folder') +
+            '” under those names.');
+        paint(rec, null);
+        addRepairButton(true);
+        showPrompt();
+        return false;
+      }, function () { return restoreFromFolder(); });
   }
 
   /* THE FALLBACK, for a browser with no File System Access API — or one where he has
@@ -519,8 +734,10 @@
     hidePrompt();
     var input = JS.$ ? JS.$('file-gallery') : null;
     if (!input) return false;
+    notice = '';
     pending = true;
     pendingNote = null;
+    reseed = false;
     // The same picker the Import button opens, so he picks from the same place with the
     // same multi-select.
     input.click();
@@ -535,12 +752,25 @@
       pending = false;
       var info = pendingNote;
       pendingNote = null;
+      var r = null;
       try {
-        restoreNow(info);
+        r = restoreNow(info);
       } catch (e) {
         if (global.console && global.console.error) global.console.error('Recall: restore failed', e);
-        if (JS.hint) JS.hint('Could not put your edits back — the photos are imported as normal.');
+        say('Could not put your edits back — the photos are imported as normal.');
       }
+      /* A FOLDER IMPORT MUST LEAVE A RECORD BUILT FROM THE FOLDER'S OWN NAMES, or the
+         one-time repair repairs nothing and the next launch starts over. Only ever set by
+         `folderImport`; a re-pick must NOT re-capture, because the saved record is the
+         thing being matched against. */
+      if (reseed) {
+        reseed = false;
+        try { capture(); } catch (e2) { /* best effort, as everywhere in this file */ }
+      }
+      /* THE OUTCOME GOES WHERE HE CAN SEE IT. The banner is hidden while the import runs,
+         and `JS.hint` writes into the editor — so a restore that brought back four of six
+         photos, naming the two that did not come back, used to finish in silence. */
+      if (r && r.message) paintResult(r.message);
       return;
     }
     capture();
@@ -642,6 +872,42 @@
   function hidePrompt() { if (els) els.bar.setAttribute('style', 'display:none'); }
   function showPrompt() { if (els) els.bar.setAttribute('style', CSS_BANNER); }
 
+  /* WHERE THE ANSWERS ARE ACTUALLY SHOWN.
+   *
+   * Every outcome this module produces used to go through `JS.hint`, and `JS.hint` writes
+   * into `#stage-hint` — which lives inside the EDITOR view (index.html:142). This module
+   * only ever runs on the HOME screen. So every sentence it composed was painted into an
+   * element that was not on screen: "6 of your saved photos are not in “Camera” any more"
+   * — the one message that tells the client which photograph to go and redo — was drawn
+   * where he could not see it, on a screen where the banner said nothing at all. A missing
+   * file, an unreadable file, a changed file and a folder that is simply wrong all looked
+   * identical from where he was standing, which is to say they all looked like nothing.
+   *
+   * So the BANNER carries the outcome. `say` still calls `JS.hint` as well — the editor
+   * shares the same sentences and a probe reads them — but the banner is the surface that
+   * the client actually has in front of him, and it is the one that must never be silent. */
+  function say(msg) {
+    notice = msg || '';
+    if (JS.hint) { try { JS.hint(notice); } catch (e) { /* the banner copy is the one that counts */ } }
+    if (els && els.text) els.text.textContent = notice;
+    return notice;
+  }
+
+  /* The banner, used purely as a report: the outcome of something he just asked for, with
+     one button that puts it away. Guarded on `els`, because a module reached without the
+     banner ever having been painted has nothing to report into and must not conjure one. */
+  function paintResult(msg) {
+    if (!els) return false;
+    notice = msg;
+    els.text.textContent = msg;
+    act(els.primary, 'OK', function () { hidePrompt(); });
+    act(els.secondary, '', null);
+    els.drop.hidden = true;
+    els.later.hidden = true;
+    els.bar.setAttribute('style', CSS_BANNER);
+    return true;
+  }
+
   /* WHAT THE BANNER SAYS, AND WHY IT SAYS ALL OF IT.
    *
    * The client's complaint about the setup was not only the picker: the banner asked
@@ -657,34 +923,63 @@
    */
   function paint(rec, opts) {
     build();
-    var n = rec.pages.length;
-    var when = String(rec.saved_utc || '').replace('T', ' ').replace('Z', ' UTC');
-    var what = n + ' photo' + (n === 1 ? '' : 's') + ' saved ' + when;
     var repickFirst = !!(opts && opts.repickFirst);
     var hasFolder = !!folder && !!JS.fsHandle;
     var canPick = !!JS.fsHandle && JS.fsHandle.supported();
+    var base;
+
+    /* "Forget it" clears a record, so with no record it is a button with nothing behind
+       it — and a button with nothing behind it is how a banner looks broken. */
+    els.drop.hidden = !rec;
+    els.later.hidden = false;
+
+    if (!rec) {
+      /* NOTHING SAVED YET, AND THE SETUP IS STILL ON OFFER.
+       *
+       * This branch is the whole of the client's bug. The folder step used to exist only as
+       * a button on a banner that only appeared when a saved record already existed — and
+       * the record he had was written by a build that had no folder concept, so the one
+       * thing that could have made the folder work was the one thing he could not reach.
+       * The step is now offered on its own, before and independently of any selection. */
+      base = 'Save a step every time: pick the folder your photos are in, once, and from ' +
+        'then on one tap reopens them with no picker at all. Nothing is copied off this ' +
+        'phone and nothing is ever written to that folder.';
+      els.text.textContent = notice ? base + ' ' + notice : base;
+      act(els.primary, 'Choose my photo folder', chooseFolder);
+      act(els.secondary, '', null);
+      return;
+    }
+
+    var n = rec.pages.length;
+    var when = String(rec.saved_utc || '').replace('T', ' ').replace('Z', ' UTC');
+    var what = n + ' photo' + (n === 1 ? '' : 's') + ' saved ' + when;
     var where = rec.folder ? ' from “' + rec.folder + '”' : '';
 
     if (hasFolder && !repickFirst) {
-      els.text.textContent = 'Load your last selection? ' + what + where + '. ' +
+      base = 'Load your last selection? ' + what + where + '. ' +
         'One tap and your crops, tone and covering come back — I open them straight from ' +
         'that folder, so there is nothing to pick.';
       act(els.primary, 'Reload my last selection', restoreFromFolder);
       act(els.secondary, 'Choose a different folder', chooseFolder);
     } else if (canPick && !repickFirst) {
-      els.text.textContent = 'Load your last selection? ' + what + where + '. ' +
+      base = 'Load your last selection? ' + what + where + '. ' +
         'A folder picker will open once: choose the folder your photos are in and I can ' +
         'reopen them by name — no picking next time. Nothing is copied off your phone.';
       act(els.primary, 'Choose your photo folder', chooseFolder);
       act(els.secondary, 'Pick the photos again', startRepick);
     } else {
-      els.text.textContent = 'Load your last selection? ' + what + where + '. ' +
+      base = 'Load your last selection? ' + what + where + '. ' +
         'This browser will not let a page reopen a folder, so a file picker will open and ' +
         'you pick the photos again — they are matched by name, and your crops, tone and ' +
         'covering still come back.';
       act(els.primary, 'Pick the photos again', startRepick);
-      act(els.secondary, '', null);
+      /* The re-pick may be on screen because the LAST folder attempt failed rather than
+         because the browser cannot do folders at all. Where the API exists, the better
+         road stays on the banner instead of vanishing the moment one attempt went wrong. */
+      if (canPick) act(els.secondary, 'Choose my photo folder', chooseFolder);
+      else act(els.secondary, '', null);
     }
+    els.text.textContent = notice ? base + ' ' + notice : base;
   }
 
   /* ASK ONCE — once per session, and the asking IS the once.
@@ -700,9 +995,15 @@
   function offer() {
     if (noticed || sessionFlag()) return false;
     var rec = load();
-    if (!rec) return false;
+    /* NOTHING SAVED IS NOT NOTHING TO OFFER. The folder step is the thing that has to be
+       reachable BEFORE a record exists — gating it behind a saved selection is exactly how
+       it became unreachable on the phone that needed it. With no record and no folder API
+       there is genuinely nothing to say, so the banner stays down. */
+    var canPick = !!JS.fsHandle && JS.fsHandle.supported();
+    if (!rec && !canPick) return false;
     noticed = true;
     setSessionFlag();
+    notice = '';
     paint(rec, null);
     showPrompt();
     return true;
@@ -748,6 +1049,12 @@
        questions: which case the banner is in, and which folder is remembered. */
     restoreFromFolder: restoreFromFolder, chooseFolder: chooseFolder,
     startRepick: startRepick, currentFolder: function () { return folder; },
-    setFolder: function (h) { folder = h || null; return folder; }
+    setFolder: function (h) { folder = h || null; return folder; },
+    /* The folder-import and name-repair half, exported for the same reason: it is the path
+       that only runs on a phone whose picker renames files, and the only way to assert what
+       it does is to ask it. */
+    folderImport: folderImport, reconcile: reconcile, askForFolderImport: askForFolderImport,
+    addRepairButton: addRepairButton, renameNote: renameNote,
+    currentNotice: function () { return notice; }
   };
 })(typeof window !== 'undefined' ? window : globalThis);

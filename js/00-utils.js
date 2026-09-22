@@ -11,7 +11,7 @@ var JS = window.JS || (window.JS = {});
    real check while the markup has nothing to agree with on its own.
    Bump it by hand, and say what changed — there is no changelog behind this
    and the number is for telling two builds apart, not for promising anything. */
-JS.VERSION = '1.10.0';
+JS.VERSION = '1.11.0';
 
 /* ---------- misc ---------- */
 
