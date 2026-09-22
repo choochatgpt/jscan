@@ -100,6 +100,7 @@
   var noticed = false;      // "Not now" pressed, or already offered, this session
   var notice = '';          // the sentence currently shown in the banner, if any
   var promptStrikes = 0;    // consecutive "prompt" outcomes; see restoreFromFolder
+  var muted = false;        // a better offer is on screen; see `mute`
 
   /* ------------------------------------------------------------------ storage */
 
@@ -778,6 +779,25 @@
 
   function hasSaved() { return !!load(); }
 
+  /* MUTED BY A BETTER OFFER — js/79-photo-cache.js, when a whole selection is cached on
+     this phone.
+   *
+   * Every route this file can offer costs the client a picker, and the folder route costs
+   * him one that CANNOT WORK on a photo he chose from his album: the name the phone hands
+   * the page is a synthetic one that does not exist inside any folder (see `renameNote`).
+   * A cached selection is reopened with one tap and no picker at all, so while one exists
+   * this banner is the worse of two answers sitting above the better one, and it is put
+   * away rather than left competing.
+   *
+   * Muting is NOT forgetting. Nothing is cleared: the record stays, the handle stays, and
+   * `mute(false)` puts the same offer back on the next `offer()`. `paint` is guarded too,
+   * because a restore path that repainted here would undo the mute from underneath. */
+  function mute(on) {
+    muted = !!on;
+    if (muted) hidePrompt();
+    return muted;
+  }
+
   /* ---------------------------------------------------------------- the prompt */
 
   /* IN THE PAGE'S OWN FLOW, NOT FLOATING OVER IT.
@@ -922,6 +942,7 @@
    *   repick  the API is missing, or the folder was refused: the honest fallback
    */
   function paint(rec, opts) {
+    if (muted) return false;
     build();
     var repickFirst = !!(opts && opts.repickFirst);
     var hasFolder = !!folder && !!JS.fsHandle;
@@ -993,7 +1014,7 @@
    * one sitting, and a fresh launch is a fresh question.
    */
   function offer() {
-    if (noticed || sessionFlag()) return false;
+    if (muted || noticed || sessionFlag()) return false;
     var rec = load();
     /* NOTHING SAVED IS NOT NOTHING TO OFFER. The folder step is the thing that has to be
        reachable BEFORE a record exists — gating it behind a saved selection is exactly how
@@ -1045,6 +1066,14 @@
     offer: offer, hidePrompt: hidePrompt, paint: paint,
     onFilesAdded: onFilesAdded, restoreNow: restoreNow, applyTo: applyTo,
     snapshot: snapshot, boot: boot,
+    /* ONE PAGE'S RESTORABLE STATE, exported because js/79-photo-cache.js has to write the
+       same values into its own record and a second implementation of this list would be a
+       second thing to keep in step — `applyTo` is the reader for exactly this shape, and
+       a cache entry that did not match it would restore as nothing at all. */
+    pageState: pageState,
+    /* See `mute`: a cached selection makes every route this file can offer the worse
+       answer, so the cache module puts this banner away while it has one. */
+    mute: mute,
     /* The folder half, exported for the tests and for anything that needs to ask the same
        questions: which case the banner is in, and which folder is remembered. */
     restoreFromFolder: restoreFromFolder, chooseFolder: chooseFolder,

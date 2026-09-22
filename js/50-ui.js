@@ -834,6 +834,13 @@
        been picked against what was saved and re-applies the tweaks. Both are that
        module's business; this only has to say when to look. */
     if (JS.recall) JS.recall.onFilesAdded();
+    /* And the same moment for the on-device photo cache (js/79-photo-cache.js), which
+       copies the encoded images into this phone's IndexedDB so the next launch can bring
+       the whole selection back with ONE TAP AND NO PICKER. It is deliberately a separate
+       module and a separate call from the line above: that one records where the photos
+       came from, this one keeps the photographs, and the two are never the same thing.
+       Nothing here ever leaves the phone — see the file. */
+    if (JS.photoCache) JS.photoCache.onFilesAdded();
   };
 
   /**
@@ -854,6 +861,14 @@
     });
     if (img.decode) { try { await img.decode(); } catch (e) { /* already loaded */ } }
     img._url = url;
+    /* THE BLOB ITSELF, because the URL cannot be read back. A blob: URL is an opaque
+       handle — `fetch` on it is the only other way to the bytes, and it is revoked the
+       moment the page is released, so anything that wants the encoded image later (the
+       on-device photo cache, js/79-photo-cache.js) has to be handed the Blob now or not
+       at all. This holds no second copy of anything: the URL and the Blob are two
+       references to the same bytes in the browser's blob store, and the page cap
+       (JS.WORK_MAX) already bounds it. */
+    img._blob = blob;
     return img;
   }
 

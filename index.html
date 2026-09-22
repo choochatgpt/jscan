@@ -408,5 +408,14 @@
      redaction mask, a saved comment and a remembered folder can all be put back. It is
      inert until something has actually been saved, and it never loads a photo by itself. -->
 <script src="js/78-learn-recall.js"></script>
+<!-- 79 is the on-device photo cache (JS.photoCache): the last selection's PHOTOGRAPHS,
+     kept in IndexedDB on this phone, so one tap at start brings the whole selection back
+     with no picker. It exists because a photo chosen from the Android album arrives under
+     a synthetic name ("1000012345.jpg"), so 77/78 can never reopen it by name.
+     IT HAS NO NETWORK PATH AND IS NOT WIRED TO 70-LEARN. Nothing it holds is ever
+     uploaded; it never attaches a photo to a bundle. It loads last, after 50 (JS.addFiles)
+     and after 78 (whose pageState/applyTo it reuses, and whose picker offers it mutes
+     when a whole selection is already cached). -->
+<script src="js/79-photo-cache.js"></script>
 </body>
 </html>

@@ -290,6 +290,16 @@
       statusStyle: status.getAttribute('style'),
       statusStyleErr: status.getAttribute('style') + ';color:#fca5a5;font-weight:600'
     };
+    /* BUILT IS NOT OPENED, AND THIS LINE IS THE DIFFERENCE.
+       `CSS_OVERLAY` is a fixed, full-screen, 88%-opaque cover — that is what an open Learn
+       sheet is — and building the nodes with that style left the sheet on screen. Every
+       caller that only wants the note fields, and never asks to open anything, therefore
+       blacked out the app: the restore in js/78-learn-recall.js calls `setComment` on a
+       page where nothing has asked for Learn yet, and so does the photo cache in
+       js/79-photo-cache.js, and both of them put an empty black sheet over the client's
+       photographs until he pressed Cancel. `open()` sets `CSS_OVERLAY` itself, so hiding
+       here cannot hide a sheet that was asked for. */
+    overlay.setAttribute('style', 'display:none');
     return els;
   }
 
