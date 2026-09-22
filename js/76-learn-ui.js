@@ -169,28 +169,51 @@
 
   /* WHO WROTE THE CROP, AND WHAT THE DETECTOR SAID ABOUT IT.
    *
-   * Three fields on the page, and the label follows from them:
-   *   page.autoRan      Auto crop has been pressed at least once
-   *   page.quadAuto     the detector's quad, or null if it found nothing
+   * Four fields on the page, in two pairs, and the label follows from them:
+   *   page.autoRan      Auto crop has been asked about the frame the page holds NOW
+   *   page.quadAuto     the detector's quad for that frame, or null if it found nothing
    *   page.cornersFrom  'auto' | 'manual' | '' (nobody has written one)
+   *   page.autoOutcome  'found' | 'refused' | '' - what the detector answered about this
+   *                     PHOTOGRAPH, which survives the crop being baked in by "Done"
+   *
+   * THE TWO PAIRS ARE NOT REDUNDANT, and the bug that made them necessary is a real
+   * submission. The first three are geometry: they describe the quad in force and the
+   * frame it was measured in, so `JS.commitPage` and `JS.undoAll` clear them with the
+   * crop. `autoOutcome` is not geometry - it is a fact about the photograph - and it is
+   * still true after a bake. Reading the verdict off the LIVE fields alone meant that a
+   * page the client auto-cropped (it refused), hand-cropped and then pressed Done on
+   * arrived here as `not_attempted`, while his own comment on that same submission said
+   * "Failed to auto crop". The app claimed auto crop had never been run. It had.
+   *
+   * So the STATE is decided by the photograph's history (`asked` / `refused`) and only
+   * the geometries are decided by the live fields. When `autoOutcome` is absent - a record
+   * written by v1.9.0, or a page built before this field existed - the verdict falls back
+   * to exactly what this function used to compute, so no older submission is relabelled.
    *
    * `quad_user` is sent ONLY when the finger wrote the current corners. A page that was
    * rotated - or one the detector cropped - has non-null corners without the user having
-   * moved anything, and sending those as `quad_user` would invent a correction.
+   * moved anything, and sending those as `quad_user` would invent a correction. For the
+   * same reason `quad_auto` is NOT resurrected for a page that has been committed: the
+   * stored quad is a rectangle in a frame whose pixels no longer exist.
    *
-   * The two labels beyond the three the PC names exist so that neither of those cases is
-   * mislabelled as a refusal. A refusal is what the training set wants most, which is
-   * exactly why it must never be produced by a page the detector was not asked about. */
+   * `not_attempted` exists so that a hand-drawn crop is never filed as a refusal. A
+   * refusal is what the training set wants most, which is exactly why it must never be
+   * produced by a page the detector was not asked about. */
   function provenance(page) {
     var auto = page.quadAuto || null;
     var manual = page.cornersFrom === 'manual';
+    var o = page.autoOutcome;
+    var hist = (o === 'found' || o === 'refused') ? o : '';
+    var asked = !!page.autoRan || !!hist;
+    // The verdict: the sticky history when there is one, and the live frame's own answer
+    // otherwise - which is the pre-`autoOutcome` behaviour, preserved exactly.
+    var refused = hist ? hist === 'refused' : !auto;
     var state;
-    if (!page.autoRan && !manual) state = 'not_attempted';
-    else if (auto && manual) state = 'corrected';
-    else if (auto) state = 'auto_accepted';
-    else if (!page.autoRan) state = 'not_attempted';
-    else if (manual) state = 'refused_then_corrected';
-    else state = 'refused';
+    if (!asked) state = 'not_attempted';
+    else if (refused && manual) state = 'refused_then_corrected';
+    else if (refused) state = 'refused';
+    else if (manual) state = 'corrected';
+    else state = 'auto_accepted';
     return {
       state: state,
       quadAuto: quadPairs(auto),
@@ -641,6 +664,11 @@
 
   JS.learnUI = {
     open: open, close: close, wire: wire, boot: boot,
-    currentComment: currentComment, setComment: setComment
+    currentComment: currentComment, setComment: setComment,
+    /* `provenance` is exported for exactly one reason: it is the label the PC trains on,
+       it is derived rather than asked for, and the only way to assert what it says for a
+       sequence of taps is to ask it. tests/commit_flow.js drives the real buttons that
+       write its inputs and then reads the answer here. */
+    provenance: provenance
   };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -905,6 +905,16 @@
     // `quadAuto` standing would make a committed page - which has no crop left
     // to attribute to anybody - report the detector's old answer to the Learn
     // manifest, and `cornersFrom` would name a writer whose corners are gone.
+    //
+    // `autoOutcome` is deliberately NOT cleared, and that asymmetry is the whole
+    // point of it having a second field. The three above are geometry: they say
+    // which quad is in force and in which frame it was measured, and after a
+    // bake both answers are wrong. `autoOutcome` is not geometry - it is what the
+    // detector said about this PHOTOGRAPH - and it is still true. Clearing it
+    // made the manifest report `not_attempted` for a page the client had
+    // auto-cropped (it refused), hand-cropped and then pressed Done on, while his
+    // own comment on the same submission said "Failed to auto crop". He was right
+    // and the label was wrong; see tests/commit_flow.js.
     page.cornersFrom = '';
     page.quadAuto = null;
     page.autoRan = false;
@@ -1014,6 +1024,7 @@
     copy.cornersFrom = src.cornersFrom;
     copy.quadAuto = src.quadAuto ? src.quadAuto.map(function (p) { return { x: p.x, y: p.y }; }) : null;
     copy.autoRan = src.autoRan;
+    copy.autoOutcome = src.autoOutcome;
     copy.mode = src.mode;
     copy.modeTap = '';          // a copy starts with no chip of its own lit by hand
     copy.modeBack = null;
@@ -1098,7 +1109,13 @@
     /* A full reset, so the record of how the crop got here goes too. This is the
        difference between "the user is looking at a refusal" and "the user undid
        everything including the crop" - keeping `autoRan` would report the second
-       as the first. */
+       as the first.
+
+       `autoOutcome` stays, for the same reason it stays in `commitPage`: the
+       buttons undo a CROP, and "the detector was asked about this photograph and
+       refused" is not part of the crop. A page he auto-cropped, hand-cropped,
+       undid and then re-cropped by hand is a page where the detector really did
+       refuse, and the manifest should say so. */
     page.cornersFrom = '';
     page.quadAuto = null;
     page.autoRan = false;

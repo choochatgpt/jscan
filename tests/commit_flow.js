@@ -110,12 +110,23 @@ sandbox.window.window = sandbox.window;
 sandbox.self = sandbox;
 vm.createContext(sandbox);
 
+// 70/75/76 are loaded for ONE reason: the Learn manifest's `state` label is derived by
+// `JS.learnUI.provenance()` from fields that `commitPage` and `undoAll` write, so the claim
+// "Done does not turn a refusal into not_attempted" can only be checked by driving the real
+// commit and then asking the real label function. 70 only touches localStorage inside
+// try/catch, so it loads with no stub.
 for (const f of ['00-utils.js', '10-imageops.js', '20-detect.js', '30-pipeline.js',
-                 '40-export.js', '50-ui.js']) {
+                 '40-export.js', '50-ui.js', '70-learn.js', '75-learn-mask.js',
+                 '76-learn-ui.js']) {
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', f), 'utf8'), sandbox, { filename: f });
 }
 const JS = sandbox.window.JS;
 const app = JS.app;
+if (!JS.learnUI || !JS.learnUI.provenance) {
+  console.error('FAIL: js/76-learn-ui.js did not expose JS.learnUI.provenance');
+  process.exit(1);
+}
+const label = (p) => JS.learnUI.provenance(p).state;
 
 /* ---------- harness ---------- */
 
@@ -233,6 +244,120 @@ function editedPage(source) {
     p.source._url = url;
     JS.deletePage(0);
     check('deleting a page revokes its blob', !liveUrls.has(url));
+  }
+
+  /* ---- 7. the Learn label survives "Done" - the real wrong-provenance report ----
+   *
+   * A REAL v1.9.0 SUBMISSION arrived with `state: not_attempted` while the client's own
+   * comment on it said "Failed to auto crop" - the app claiming auto crop had never been
+   * run on a page he had run it on. The cause is `commitPage` clearing `autoRan`,
+   * `quadAuto` AND `cornersFrom` together with the crop: after "Done" the detector's
+   * answer is unrecoverable, and a later hand-drag then reads as a page nobody asked
+   * about.
+   *
+   * Every step below is the real function. `JS.detectPageQuad` is stubbed to return null,
+   * which is the production "No clear page edge found" outcome - the input, not the thing
+   * under test.
+   */
+  {
+    const realDetect = JS.detectPageQuad;
+    JS.detectPageQuad = () => null;                       // the detector REFUSES
+    const hand = [{ x: 0.11, y: 0 }, { x: 0.71, y: 0 }, { x: 0.79, y: 0.99 }, { x: 0.06, y: 0.99 }];
+    const hand2 = [{ x: 0.13, y: 0.01 }, { x: 0.69, y: 0.02 }, { x: 0.77, y: 0.98 }, { x: 0.08, y: 0.97 }];
+
+    // (a) Auto crop is pressed and refuses.
+    const page = JS.createPage(new FakeImage(), 400, 600, 'IMG_0421.JPG');
+    app.pages = [page]; app.active = 0;
+    check('the page under test is the active one', JS.activePage() === page);
+    await JS.autoDetect(page);
+    check('the refusal is recorded as an outcome, not just as a missing quad',
+      page.autoOutcome === 'refused', 'autoOutcome=' + JSON.stringify(page.autoOutcome));
+
+    // (b) The user drags a corner in by hand - `moveCropDrag` is what writes these two.
+    page.corners = hand;
+    page.cornersFrom = 'manual';
+    check('asked + refused + hand-drawn reads as refused_then_corrected',
+      label(page) === 'refused_then_corrected', label(page));
+
+    // (c) He presses Done.
+    await JS.commitPage(page);
+    check('Done still clears the geometry it has baked in',
+      page.corners === null && page.cornersFrom === '' && page.quadAuto === null &&
+      page.autoRan === false,
+      `corners=${page.corners} from=${JSON.stringify(page.cornersFrom)} ` +
+      `quadAuto=${page.quadAuto} autoRan=${page.autoRan}`);
+    check('Done does NOT erase what the detector said about the photograph',
+      page.autoOutcome === 'refused', 'autoOutcome=' + JSON.stringify(page.autoOutcome));
+    check('a committed page is still reported as a refusal, not as not_attempted',
+      label(page) === 'refused', label(page));
+
+    // (d) He drags another corner on the committed page and sends. THIS is the sequence
+    // that produced the wrong label: manual corners with the auto history erased.
+    page.corners = hand2;
+    page.cornersFrom = 'manual';
+    check('THE REPORTED BUG: refused -> hand-crop -> Done -> hand-crop stays ' +
+      'refused_then_corrected',
+      label(page) === 'refused_then_corrected', label(page));
+
+    // (e) The same for Undo all, which is the other full reset.
+    const p2 = JS.createPage(new FakeImage(), 400, 600, 'IMG_0422.JPG');
+    app.pages = [p2]; app.active = 0;
+    await JS.autoDetect(p2);
+    p2.corners = hand;
+    p2.cornersFrom = 'manual';
+    JS.undoAll();
+    check('Undo all keeps the detector history too', label(p2) === 'refused', label(p2));
+    p2.corners = hand2;
+    p2.cornersFrom = 'manual';
+    check('Undo all + a fresh hand-crop is still a refusal', label(p2) === 'refused_then_corrected',
+      label(p2));
+
+    // (f) THE FALSIFIER: a page the detector was NEVER asked about must still say
+    // not_attempted. Without this the fix above would be a licence to invent refusals,
+    // which is the one thing the label must never do.
+    const p3 = JS.createPage(new FakeImage(), 400, 600, 'IMG_0423.JPG');
+    app.pages = [p3]; app.active = 0;
+    p3.corners = hand;
+    p3.cornersFrom = 'manual';
+    check('a hand-crop with no Auto crop at all is still not_attempted',
+      label(p3) === 'not_attempted', label(p3));
+    p3.quadAuto = null;
+    await JS.commitPage(p3);                              // and Done must not change that
+    check('and Done does not turn it into a refusal',
+      label(p3) === 'not_attempted', label(p3));
+
+    // (g) A page the detector got RIGHT and the user then moved: still corrected.
+    const p4 = JS.createPage(new FakeImage(), 400, 600, 'IMG_0424.JPG');
+    app.pages = [p4]; app.active = 0;
+    p4.autoRan = true;
+    p4.autoOutcome = 'found';
+    p4.quadAuto = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+    p4.corners = p4.quadAuto.map((p) => ({ x: p.x, y: p.y }));
+    check('found + untouched is auto_accepted', label(p4) === 'auto_accepted', label(p4));
+    p4.corners = hand;
+    p4.cornersFrom = 'manual';
+    check('found + moved is corrected', label(p4) === 'corrected', label(p4));
+    await JS.commitPage(p4);
+    p4.corners = hand2;
+    p4.cornersFrom = 'manual';
+    check('a page the detector got right is never relabelled as a refusal',
+      label(p4) === 'corrected', label(p4));
+
+    // (h) An OLD record with no autoOutcome falls back to the v1.9.0 derivation exactly.
+    const p5 = JS.createPage(new FakeImage(), 400, 600, 'IMG_0425.JPG');
+    app.pages = [p5]; app.active = 0;
+    p5.autoRan = true;
+    p5.autoOutcome = '';                                  // never written by v1.9.0
+    p5.quadAuto = null;
+    p5.corners = hand;
+    p5.cornersFrom = 'manual';
+    check('v1.9.0 state without autoOutcome is unchanged (refused_then_corrected)',
+      label(p5) === 'refused_then_corrected', label(p5));
+    p5.cornersFrom = '';
+    check('v1.9.0 state without autoOutcome is unchanged (refused)',
+      label(p5) === 'refused', label(p5));
+
+    JS.detectPageQuad = realDetect;
   }
 
   console.log('\n' + (fail ? fail + ' failed, ' + pass + ' passed' : pass + ' passed, 0 failed') + '\n');

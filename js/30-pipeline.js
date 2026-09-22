@@ -160,10 +160,21 @@
          been asked at all: without it, a page the user hand-drew before ever
          pressing Auto crop would be indistinguishable from one the detector
          REFUSED, and labelling a refusal that never happened is exactly the
-         fabricated label the Learn manifest exists to avoid. See js/76-learn-ui.js. */
+         fabricated label the Learn manifest exists to avoid. See js/76-learn-ui.js.
+
+         `autoOutcome` is the odd one out and the reason there are two fields
+         rather than one. The three above are about the CROP — they describe the
+         quad that is in force and the frame it was measured in — so "Done" and
+         "Undo all" clear them along with the crop. `autoOutcome` is not about the
+         crop at all: it is what the detector answered about this PHOTOGRAPH, and
+         that stays true after the crop is baked in. Without it, a page the client
+         auto-cropped (refused), hand-cropped and then pressed Done on reached the
+         Learn manifest as `not_attempted` while his own comment said "Failed to
+         auto crop" — measured, see tests/commit_flow.js. `''` means never asked. */
       cornersFrom: '',
       quadAuto: null,
       autoRan: false,
+      autoOutcome: '',
       mode: 'auto',
       modeTap: '',             // the mode chip the user turned on, if any
       modeBack: null,          // the tone that chip replaced; see JS.setMode
@@ -726,7 +737,12 @@
     var quad = JS.detectPageQuad(oc, 420);
     // The detector's own answer, recorded whichever way it goes: a refusal is a
     // result too, and it is the one the Learn manifest is most interested in.
+    //
+    // Recorded TWICE, on purpose. `autoRan` and `quadAuto` describe the crop in
+    // force and are cleared with it; `autoOutcome` describes the photograph and
+    // survives, so "Done" cannot turn a refusal into `not_attempted`.
     page.autoRan = true;
+    page.autoOutcome = quad ? 'found' : 'refused';
     if (quad) {
       page.corners = quad.map(function (p) {
         return { x: JS.clamp(p.x / oc.width, 0, 1), y: JS.clamp(p.y / oc.height, 0, 1) };
