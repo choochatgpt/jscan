@@ -397,10 +397,16 @@
 <script src="js/70-learn.js"></script>
 <script src="js/75-learn-mask.js"></script>
 <script src="js/76-learn-ui.js"></script>
+<!-- 77 is the File System Access layer (JS.fsHandle): the directory handle, kept in
+     IndexedDB, that lets the app reopen a saved filename with no picker. It is the only
+     file that touches showDirectoryPicker, it never writes to the user's folder, and it
+     never lists one. It must load BEFORE 78, which falls back to re-picking when it is
+     absent or unsupported. -->
+<script src="js/77-fs-handle.js"></script>
 <!-- 78 is the last-selection memory (JS.recall). It loads AFTER 50/60 so that JS.app
-     exists when it decides whether to offer a restore, and after 75/76 so that a saved
-     redaction mask and a saved comment can be put back. It is inert until something has
-     actually been saved, and it never loads a photo by itself. -->
+     exists when it decides whether to offer a restore, and after 75/76/77 so that a saved
+     redaction mask, a saved comment and a remembered folder can all be put back. It is
+     inert until something has actually been saved, and it never loads a photo by itself. -->
 <script src="js/78-learn-recall.js"></script>
 </body>
 </html>
