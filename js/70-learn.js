@@ -47,6 +47,13 @@
   var EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
   var TOKEN_KEY = 'jscanner.learn.token';
   var MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+  /* How many times a submission may lose the race for the branch head before giving up.
+   * Each retry re-uses the already-uploaded blobs, so it costs three small JSON calls. */
+  var MAX_REF_ATTEMPTS = 4;
+
+  function pause(ms) {
+    return new Promise(function (resolve) { global.setTimeout(resolve, ms); });
+  }
 
   /* ---------------------------------------------------------------- token */
 
@@ -237,42 +244,84 @@
         });
       })).then(function (entries) { return { parent: parent, entries: entries }; });
     }).then(function (ctx) {
-      // MERGE with what is already on the branch. Omitting base_tree makes the new tree
-      // REPLACE the branch's whole contents, silently dropping any earlier submission -
-      // a bug that was found and fixed on the PC side during testing.
-      return api('GET', '/repos/' + REPO + '/git/commits/' + ctx.parent, null, tok)
-        .then(function (r) {
-          if (r.status !== 200) throw new Error('cannot read parent (' + r.status + ')');
-          var body = { tree: ctx.entries };
-          var tree = r.data.tree.sha;
-          if (tree !== EMPTY_TREE) body.base_tree = tree;
-          return api('POST', '/repos/' + REPO + '/git/trees', body, tok)
-            .then(function (t) {
-              if (t.status !== 201) throw new Error('tree failed (' + t.status + ')');
-              return { parent: ctx.parent, tree: t.data.sha };
+      /* MERGE onto the branch and advance the ref - as a compare-and-swap loop, NOT a
+       * straight write. The reason is a real failure on the client's phone:
+       *
+       *     "Could not send: ref update failed (422)"
+       *
+       * GitHub refuses a ref update without `force` unless it is a FAST FORWARD. The
+       * parent commit is read at the START of the submit (ensureBranch, above), before the
+       * two ~500KB blobs are uploaded - on a phone that window is seconds to tens of
+       * seconds. If anything advances the branch inside that window, the commit we built
+       * no longer descends from the head and the update is refused with 422 "Update is not
+       * a fast forward". Two things do that routinely: a second submission still in flight
+       * from an overlay that was closed mid-upload, and the PC collecting and wiping.
+       *
+       * Confirmed against the live branch rather than assumed: PATCHing the ref to an
+       * ancestor of the head, with no `force`, returns exactly 422 "Update is not a fast
+       * forward", and the ref is verified untouched afterwards.
+       *
+       * `force: true` would "fix" this by overwriting the branch - silently discarding
+       * whichever submission won the race. Losing a photograph to a race is worse than a
+       * retry, so: on a lost race, re-read the head, re-merge onto it, and try again. The
+       * expensive part (the blobs) is already uploaded, so a retry is three small JSON
+       * calls.
+       *
+       * `base_tree` is mandatory on every attempt. Omitting it makes the new tree REPLACE
+       * the branch's whole contents, silently dropping earlier submissions - a bug found
+       * and fixed on the PC side during testing, and one a retry could easily reintroduce.
+       */
+      var entries = ctx.entries;
+
+      function land(attempt) {
+        return ensureBranch(tok).then(function (parent) {
+          return api('GET', '/repos/' + REPO + '/git/commits/' + parent, null, tok)
+            .then(function (r) {
+              if (r.status !== 200) throw new Error('cannot read parent (' + r.status + ')');
+              var body = { tree: entries };
+              var tree = r.data.tree.sha;
+              if (tree !== EMPTY_TREE) body.base_tree = tree;
+              return api('POST', '/repos/' + REPO + '/git/trees', body, tok)
+                .then(function (t) {
+                  if (t.status !== 201) throw new Error('tree failed (' + t.status + ')');
+                  return t.data.sha;
+                });
+            }).then(function (tree) {
+              return api('POST', '/repos/' + REPO + '/git/commits',
+                { message: 'learn-intake: bundle ' + id, tree: tree, parents: [parent] }, tok
+              ).then(function (c) {
+                if (c.status !== 201) throw new Error('commit failed (' + c.status + ')');
+                return c.data.sha;
+              });
+            }).then(function (commit) {
+              return api('PATCH', '/repos/' + REPO + '/git/refs/heads/' + BRANCH,
+                { sha: commit }, tok
+              ).then(function (r) {
+                if (r.status === 200) return commit;
+                if (r.status === 422 && attempt < MAX_REF_ATTEMPTS) {
+                  // Lost the race. Give the winner a moment to finish, then re-read the
+                  // head and rebuild on top of whatever is actually there now.
+                  return pause(250 * (attempt + 1)).then(function () {
+                    return land(attempt + 1);
+                  });
+                }
+                throw new Error('ref update failed (' + r.status + ')' +
+                  (r.data && r.data.message ? ': ' + r.data.message : ''));
+              });
             });
         });
-    }).then(function (ctx) {
-      return api('POST', '/repos/' + REPO + '/git/commits',
-        { message: 'learn-intake: bundle ' + id, tree: ctx.tree, parents: [ctx.parent] }, tok
-      ).then(function (c) {
-        if (c.status !== 201) throw new Error('commit failed (' + c.status + ')');
-        return c.data.sha;
-      });
+      }
+
+      return land(0);
     }).then(function (commit) {
-      return api('PATCH', '/repos/' + REPO + '/git/refs/heads/' + BRANCH,
-        { sha: commit }, tok
-      ).then(function (r) {
-        if (r.status !== 200) throw new Error('ref update failed (' + r.status + ')');
-        return {
-          bundleId: id,
-          commit: commit.slice(0, 12),
-          bytes: files['before.jpg'].length + files['after.jpg'].length +
-                 files['manifest.json'].length,
-          note: 'Sent. The PC verifies it, acknowledges on issue #' + ISSUE +
-                ', then removes it from GitHub.'
-        };
-      });
+      return {
+        bundleId: id,
+        commit: commit.slice(0, 12),
+        bytes: files['before.jpg'].length + files['after.jpg'].length +
+               files['manifest.json'].length,
+        note: 'Sent. The PC verifies it, acknowledges on issue #' + ISSUE +
+              ', then removes it from GitHub.'
+      };
     });
   }
 
