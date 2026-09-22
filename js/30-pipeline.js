@@ -149,6 +149,21 @@
       coarse: 0,               // 0 | 90 | 180 | 270
       fine: 0,                 // de-skew angle in degrees
       corners: null,           // normalised quad in the oriented frame
+      /* WHO WROTE `corners`, and WHAT THE DETECTOR SAID. Three fields, because
+         two is not enough to answer the question the manifest asks.
+
+         `cornersFrom` is '' until someone writes the quad, then 'auto' or
+         'manual' — the last writer wins, so it names the quad that is actually
+         in force. `quadAuto` is the quad the detector produced, kept separately
+         so that a page the detector got wrong and the user then fixed still
+         carries the detector's own answer. `autoRan` is whether Auto crop has
+         been asked at all: without it, a page the user hand-drew before ever
+         pressing Auto crop would be indistinguishable from one the detector
+         REFUSED, and labelling a refusal that never happened is exactly the
+         fabricated label the Learn manifest exists to avoid. See js/76-learn-ui.js. */
+      cornersFrom: '',
+      quadAuto: null,
+      autoRan: false,
       mode: 'auto',
       modeTap: '',             // the mode chip the user turned on, if any
       modeBack: null,          // the tone that chip replaced; see JS.setMode
@@ -354,6 +369,15 @@
     // (index 1). Start the list there and the ordering is canonical again.
     var off = dir > 0 ? 3 : 1;
     page.corners = [0, 1, 2, 3].map(function (i) { return turn(q[(off + i) % 4]); });
+    // The detector's quad is carried round with it, not dropped: it is the same
+    // quarter turn in the same frame, so it still describes the same four points
+    // of the photo. Clearing it here would turn every rotated auto-crop into a
+    // "the detector refused" row in the Learn manifest, which would be a lie.
+    if (page.quadAuto) {
+      page.quadAuto = [0, 1, 2, 3].map(function (i) {
+        return turn(page.quadAuto[(off + i) % 4]);
+      });
+    }
     page.coarse = (page.coarse + (dir > 0 ? 90 : 270)) % 360;
     JS.invalidate(page);
   };
@@ -700,12 +724,23 @@
   JS.autoDetect = async function (page) {
     var oc = JS.orientedCanvas(page, JS.PREVIEW_MAX);
     var quad = JS.detectPageQuad(oc, 420);
+    // The detector's own answer, recorded whichever way it goes: a refusal is a
+    // result too, and it is the one the Learn manifest is most interested in.
+    page.autoRan = true;
     if (quad) {
       page.corners = quad.map(function (p) {
         return { x: JS.clamp(p.x / oc.width, 0, 1), y: JS.clamp(p.y / oc.height, 0, 1) };
       });
+      page.quadAuto = page.corners.map(function (p) { return { x: p.x, y: p.y }; });
+      page.cornersFrom = 'auto';
       page.fine = 0;
       JS.invalidate(page);
+    } else {
+      // A second refusal on the same page must not leave the FIRST attempt's quad
+      // standing: `quadAuto` means "the detector's answer for this page as it is
+      // now", and a stale one would describe a frame the detector has since
+      // looked at and declined.
+      page.quadAuto = null;
     }
     var small = JS.rectify(page, 420);
     page.fine = JS.clamp(JS.estimateSkew(small, 320), -15, 15);

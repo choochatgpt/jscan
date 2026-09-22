@@ -51,6 +51,35 @@
    * Each retry re-uses the already-uploaded blobs, so it costs three small JSON calls. */
   var MAX_REF_ATTEMPTS = 4;
 
+  /* THE NOTE PRESETS - ONE LIST, ONE PLACE.
+   *
+   * These are the client's own words for what went wrong, tidied only enough to be
+   * readable side by side. `id` is what the manifest carries and is the STABLE key:
+   * the wording may be reworded later without orphaning every row already collected,
+   * so never derive `id` from the text at runtime.
+   *
+   * `(no preset)` is the empty id, and it is a real choice, not a placeholder: it is
+   * how a note gets written in the client's own words with no category attached. The
+   * UI keeps `note_preset` and `note` as two separate fields for exactly that reason -
+   * the preset records what he picked, the note records what he actually wrote, and
+   * editing the text afterwards must not rewrite the history of what was picked.
+   *
+   * Adding a preset is one line here. Nothing else needs touching: the UI builds its
+   * <select> from this array.
+   *
+   * NOTHING HERE IS EVER PUT IN A FILENAME OR AN ISSUE BODY. A note is free text the
+   * client typed about his own photograph; the manifest is the only place it goes.
+   */
+  var NOTE_PRESETS = [
+    { id: '', text: '(no preset)' },
+    { id: 'failed_auto_crop', text: 'Failed to auto crop' },
+    { id: 'over_cropped_edge', text: 'Auto cropped wrongly — one edge over-cropped' },
+    { id: 'under_cropped_edges', text: 'Auto cropped wrongly — edges under-cropped' },
+    { id: 'over_cropped_corner', text: 'Auto cropped wrongly — corner over-cropped' },
+    { id: 'sheared_skewed', text: 'Auto cropped wrongly — sheared / skewed' },
+    { id: 'wrong_page_or_background', text: 'Auto cropped wrongly — wrong page or extra background included' }
+  ];
+
   function pause(ms) {
     return new Promise(function (resolve) { global.setTimeout(resolve, ms); });
   }
@@ -178,6 +207,18 @@
    *   refused   -> auto crop failed and was not corrected
    *   corrected -> auto crop succeeded and the user moved the corners
    *   refused_then_corrected -> failed, then corrected by hand   <- the valuable pair
+   * Two more exist so that a page the detector was never asked about, or one whose
+   * auto-crop was simply accepted, is not silently filed under one of the three above:
+   *   not_attempted  -> Auto crop was never pressed; nothing can be attributed
+   *   auto_accepted  -> the detector succeeded and the user left it alone
+   * `provenance` is the version tag for this vocabulary: 'tracked' means the fields
+   * below were derived from the page's own record, not guessed by this file.
+   *
+   * `note_preset` and `note` are the client's optional comment. Both are free to be
+   * absent, empty or null, and NEITHER EVER BLOCKS A SEND - a bundle with no comment is
+   * a complete bundle. `note_preset` is the preset he picked and is deliberately frozen
+   * at pick time: if he edits the text afterwards the preset still records the choice,
+   * so the two fields must never be re-derived from one another here.
    */
   function buildManifest(meta, images) {
     return {
@@ -186,9 +227,12 @@
       app_version: (JS.VERSION || 'unknown'),
       created_utc: new Date().toISOString().replace(/\.\d+Z$/, 'Z'),
       state: meta.state,
+      provenance: meta.provenance || 'not_tracked_yet',
       tone: meta.tone || null,
       quad_auto: meta.quadAuto || null,
       quad_user: meta.quadUser || null,
+      note_preset: meta.notePreset || null,
+      note: meta.note || null,
       redacted: !!meta.redacted,
       redaction: meta.redaction || null,
       images: images
@@ -197,7 +241,12 @@
 
   /* submit({before, after, meta}) -> Promise<{bundleId, commit, bytes}>
    *   before / after : Uint8Array of the ALREADY-REDACTED JPEG bytes
-   *   meta           : { state, tone, quadAuto, quadUser, redacted, redaction }
+   *   meta           : { state, provenance, tone, quadAuto, quadUser,
+   *                      notePreset, note, redacted, redaction }
+   * `meta.notePreset` / `meta.note` are optional and an absent one is written as null,
+   * not as an empty string: "he picked no preset" and "he picked (no preset)" are the
+   * same thing to the PC, but an empty string in a manifest is a value that has to be
+   * explained, and null is not.
    */
   function submit(bundle) {
     var tok = getToken();
@@ -224,9 +273,12 @@
       manifest = buildManifest({
         bundleId: id,
         state: bundle.meta.state,
+        provenance: bundle.meta.provenance,
         tone: bundle.meta.tone,
         quadAuto: bundle.meta.quadAuto,
         quadUser: bundle.meta.quadUser,
+        notePreset: bundle.meta.notePreset,
+        note: bundle.meta.note,
         redacted: bundle.meta.redacted,
         redaction: bundle.meta.redaction
       }, images);
@@ -347,6 +399,7 @@
     getToken: getToken, setToken: setToken, clearToken: clearToken, hasToken: hasToken,
     bundleId: bundleId, buildManifest: buildManifest, b64: b64, utf8: utf8,
     sha256hex: sha256hex, api: api,
-    ensureBranch: ensureBranch, submit: submit, checkAck: checkAck
+    ensureBranch: ensureBranch, submit: submit, checkAck: checkAck,
+    NOTE_PRESETS: NOTE_PRESETS
   };
 })(typeof window !== 'undefined' ? window : globalThis);

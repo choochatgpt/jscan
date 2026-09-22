@@ -202,6 +202,69 @@
     }
   }
 
+  /* ------------------------------------------------- saving and restoring */
+
+  /* The mask's own serialisation, for the last-selection record (js/78-learn-recall.js).
+   * It lives in THIS file because this file owns the coordinate space: a reader in
+   * another file that reimplemented the format could quietly disagree with `paint` about
+   * what a stroke means, and a disagreement about a redaction is the one class of bug
+   * this file exists to prevent.
+   *
+   * Points are rounded to four decimals. `extendStroke` already refuses points closer
+   * together than 0.0008, so rounding at 0.0001 moves nothing that was drawn — and what
+   * is saved is a redaction, so "close enough" is not a phrase that belongs here.
+   * Returns null for an empty mask: there is nothing to restore, and a null says so
+   * more clearly than an empty list of strokes.
+   */
+  function toJSON(mask) {
+    if (isEmpty(mask)) return null;
+    return {
+      radius: mask.radius,
+      strokes: mask.strokes.map(function (st) {
+        return {
+          r: Number(st.r.toFixed(5)),
+          pts: st.pts.map(function (p) {
+            return [Number(p.x.toFixed(4)), Number(p.y.toFixed(4))];
+          })
+        };
+      })
+    };
+  }
+
+  /* A FRESH mask built from saved data. The strokes are COPIED into a new object rather
+   * than adopted, because the caller is rebuilding a page from a previous session and a
+   * shared stroke array would mean a later erase edited the saved copy underneath.
+   *
+   * Everything is validated and clamped on the way in. The record comes back off a disk
+   * that can be edited, truncated or written by an older version, and a stroke that
+   * lands outside 0..1 would paint outside the picture - off the canvas, silently, with
+   * the brush looking like it worked. Nothing out of range is adopted; it is clamped.
+   */
+  function restore(data) {
+    var mask = create();
+    if (!data || !data.strokes || !data.strokes.length) return mask;
+    if (isFinite(Number(data.radius))) setRadius(mask, Number(data.radius));
+    for (var i = 0; i < data.strokes.length; i++) {
+      var st = data.strokes[i];
+      if (!st || !st.pts || !st.pts.length) continue;
+      var out = {
+        r: clamp(Number(st.r) || DEFAULT_RADIUS, MIN_RADIUS, MAX_RADIUS),
+        pts: []
+      };
+      for (var j = 0; j < st.pts.length; j++) {
+        var p = st.pts[j];
+        if (!p || p.length < 2) continue;
+        var x = Number(p[0]), y = Number(p[1]);
+        if (!isFinite(x) || !isFinite(y)) continue;
+        out.pts.push({ x: clamp(x, 0, 1), y: clamp(y, 0, 1) });
+      }
+      if (!out.pts.length) continue;
+      mask.strokes.push(out);
+      mask.rev++;
+    }
+    return mask;
+  }
+
   /** What the manifest records. Counts and a note, never the stroke coordinates. */
   function describe(mask) {
     var pts = 0;
@@ -223,6 +286,7 @@
     beginStroke: beginStroke, extendStroke: extendStroke,
     clear: clear, isEmpty: isEmpty, strokeCount: strokeCount, key: key,
     paint: paint, redactedSource: redactedSource, redactedPage: redactedPage,
-    releaseRedacted: releaseRedacted, describe: describe
+    releaseRedacted: releaseRedacted, describe: describe,
+    toJSON: toJSON, restore: restore
   };
 })(typeof window !== 'undefined' ? window : globalThis);

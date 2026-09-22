@@ -465,6 +465,59 @@
     return layer && layer.children ? layer.children : [];
   }
 
+  /** Where the eight handles sit on the preview box, in stage coordinates. */
+  function boxPts(fit) {
+    return HANDLES.map(function (h) {
+      return { x: fit.x + h.fx * fit.w, y: fit.y + h.fy * fit.h };
+    });
+  }
+
+  function mid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+
+  /* THE DOTS DURING A DRAG: the one under the finger moves, the frame does not.
+   *
+   * At rest all eight sit on the preview box, because the box *is* the crop. While a
+   * handle is being dragged that stops being true: the frame is deliberately frozen
+   * (see `JS.cropPin`) so the picture does not slide out from under the finger, which
+   * meant the grabbed dot stayed put while the finger travelled — you pushed a corner
+   * and the corner did not move, only the image inside it warped. The client's words:
+   * "if i drag the bottom left corner, it is the dot that moves and not the picture
+   * itself", which is the opposite of what it did.
+   *
+   * So one dot is lifted off the frozen box and pinned to the finger, and the two that
+   * are joined to it follow, so the eight still trace the shape being made:
+   *   corner drag -> that corner is at the finger, and its two side dots sit halfway
+   *                  between it and the corners either side of it
+   *   side drag   -> the side is at the finger and both of its corners travel with it
+   *                  by the same screen offset
+   *
+   * `finger` is the pointer's own place on the photo (clamped to it), NOT the corner
+   * the quad ended up on. Following the quad would make the dot lag the finger by
+   * exactly the amount a clamp or a refusal cost, which reads as the handle slipping.
+   * A refused move does not update the dot at all — the crop has stopped, so the dot
+   * stops with it rather than sailing on alone. When the finger lifts, `endCropDrag`
+   * drops the override and refits the frame, so the dots land on the real crop again.
+   */
+  function draggedPts(fit, handle, finger) {
+    var box = boxPts(fit);
+    var pts = box.map(function (p) { return { x: p.x, y: p.y }; });
+    if (handle % 2 === 0) {
+      // Corner `handle / 2`; sides (handle + 7) and (handle + 1) join it to the
+      // corners at (handle + 6) and (handle + 2) going clockwise from top-left.
+      var a = box[(handle + 6) % 8], b = box[(handle + 2) % 8];
+      pts[handle] = { x: finger.x, y: finger.y };
+      pts[(handle + 7) % 8] = mid(a, finger);
+      pts[(handle + 1) % 8] = mid(finger, b);
+    } else {
+      var d = { x: finger.x - box[handle].x, y: finger.y - box[handle].y };
+      var p = (handle + 7) % 8, q = (handle + 1) % 8;
+      pts[handle] = { x: finger.x, y: finger.y };
+      pts[p] = { x: box[p].x + d.x, y: box[p].y + d.y };
+      pts[q] = { x: box[q].x + d.x, y: box[q].y + d.y };
+    }
+    return pts;
+  }
+
   /** Put the handles on the corners and the middle of each side, or take them off. */
   function placeHandles(page, fit) {
     var layer = JS.$('crop-layer');
@@ -473,11 +526,79 @@
     layer.classList.toggle('is-on', on);
     if (!on) return;
     var nodes = handleNodes();
+    // `dot` is set for the duration of a drag and cleared when the finger lifts; it
+    // carries its own copy of the frame the finger's position was measured in, which
+    // is the frozen one, not whatever `fit` says this frame.
+    var drag = cropDrag && cropDrag.dot;
+    var pts = drag ? draggedPts(cropDrag.fit, drag.handle, drag)
+                   : boxPts(fit);
     for (var i = 0; i < nodes.length && i < HANDLES.length; i++) {
-      var h = HANDLES[i];
-      nodes[i].setAttribute('transform',
-        'translate(' + (fit.x + h.fx * fit.w) + ' ' + (fit.y + h.fy * fit.h) + ')');
+      nodes[i].setAttribute('transform', 'translate(' + pts[i].x + ' ' + pts[i].y + ')');
     }
+  }
+
+  /* WHICH HANDLE DID THE FINGER MEAN?
+   *
+   * This used to need no code at all: every handle had its own `pointerdown`, so the
+   * browser named the one that had been touched. The browser's answer is "the topmost
+   * element under the point", and SVG has no z-index — it paints in document order, so
+   * on a point where two handles overlap the LATER one wins. The hit circles are 26px
+   * in radius, so any two handles whose centres are less than 52px apart overlap, and
+   * that is exactly what a long receipt does: a strip photographed across the frame
+   * rectifies to a wide, short page, the preview box comes out ~40px tall, and the
+   * right-middle side handle (index 3, drawn after the top-right corner) sits inside
+   * the top-right corner's circle and takes its touches.
+   *
+   * The client's report is that one: "the top right corner always cannot be moved if i
+   * first touch it. i have to move another corner then the top right corner can be
+   * moved" — touching the corner's own dot selected the SIDE, which drags both corners
+   * of the right-hand edge; and once another corner had been moved the box grew taller,
+   * the circles stopped overlapping, and the top-right corner worked.
+   *
+   * Painting order cannot be fixed by reordering — the eight handles are a ring, and any
+   * order has this problem somewhere. So the decision is taken from the geometry
+   * instead: the NEAREST handle whose hit circle contains the point wins, measured in
+   * the layer's own coordinates so the answer does not change with the zoom. A corner
+   * is preferred only on an exact tie, which is the point at the corner's own centre.
+   *
+   * The radius is read from the shipped `<circle class="crop-hit">` rather than written
+   * down here, so index.html stays the one place that decides how big a target is.
+   */
+  function hitRadius(node) {
+    var c = node && node.querySelector ? node.querySelector('.crop-hit') : null;
+    var v = c && c.r && c.r.baseVal ? c.r.baseVal.value : 0;
+    return v > 0 ? v : 26;
+  }
+
+  function hitHandle(e) {
+    var layer = JS.$('crop-layer');
+    var nodes = handleNodes();
+    var f = previewFit;
+    if (!layer || !f || !layer.getBoundingClientRect) return -1;
+    var r = layer.getBoundingClientRect();
+    var z = view.z || 1;
+    if (!r.width || !z) return -1;
+    // Client point -> the layer's own coordinates, exactly as `moveCropDrag` does it:
+    // the stage contents are under a transform, so the layer's rect is the scaled box
+    // and dividing by the zoom turns the distance back into the units `f` is in.
+    var x = (e.clientX - r.left) / z, y = (e.clientY - r.top) / z;
+    var rad = hitRadius(nodes[0]);
+    var best = -1, bestD = Infinity;
+    for (var i = 0; i < HANDLES.length; i++) {
+      var h = HANDLES[i];
+      var dx = x - (f.x + h.fx * f.w), dy = y - (f.y + h.fy * f.h);
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d > rad) continue;
+      // `<` keeps the first of an exact tie, and the corners are the even indices, so
+      // the tie-break is already "corner wins" without a second comparison.
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best >= 0) return best;
+    /* Nothing was within range. The browser still had to hit a handle for this listener
+       to run at all, so the answer is the handle it hit — a target that is drawn but
+       dead would be worse than the bug this replaced. */
+    var g = e.target && e.target.closest ? e.target.closest('.crop-handle') : null;
+    return g ? Array.prototype.indexOf.call(nodes, g) : -1;
   }
 
   function startCropDrag(e, i) {
@@ -584,6 +705,18 @@
     // far one and turning the page inside out.
     if (!JS.quadOk(next)) return;
     page.corners = next;
+    // THE manual write. `JS.autoDetect` is the only other thing that ever sets
+    // `corners`, and it stamps 'auto'; everything downstream of this line (the
+    // Learn manifest's refused / corrected / refused_then_corrected) is decided
+    // by which of the two wrote last. A drag that `quadOk` refused returns above
+    // and correctly leaves the provenance alone - the finger moved, the crop did
+    // not, so nothing was corrected.
+    page.cornersFrom = 'manual';
+    // The finger's own place on the photo, in the FROZEN frame's coordinates, so the
+    // grabbed dot travels with it instead of staying on a box that is being held still.
+    // Set only here, on the accepted path: a move that `quadOk` refused changed nothing,
+    // and a dot that ran on would leave the handle describing a crop that is not there.
+    cropDrag.dot = { handle: cropDrag.handle, x: f.x + u * f.w, y: f.y + v * f.h };
     JS.invalidate(page);
     scheduleRender(true);
   }
@@ -696,6 +829,11 @@
       hideBusy();
     }
     renderHome();
+    /* The selection just changed. js/78-learn-recall.js either records it (the ordinary
+       case) or, if the user asked for last session's work back, matches what has just
+       been picked against what was saved and re-applies the tweaks. Both are that
+       module's business; this only has to say when to look. */
+    if (JS.recall) JS.recall.onFilesAdded();
   };
 
   /**
@@ -763,6 +901,13 @@
     page.coarse = 0;
     page.fine = 0;
     page.corners = null;
+    // The crop is in the pixels now, so the provenance goes with it. Leaving
+    // `quadAuto` standing would make a committed page - which has no crop left
+    // to attribute to anybody - report the detector's old answer to the Learn
+    // manifest, and `cornersFrom` would name a writer whose corners are gone.
+    page.cornersFrom = '';
+    page.quadAuto = null;
+    page.autoRan = false;
     page.mode = 'original';
     page.adj = Object.assign({}, JS.COMMITTED_ADJ);
 
@@ -810,7 +955,19 @@
     if (src.close) src.close();
 
     var img = await canvasToSource(c, 0.95);
-    return JS.createPage(img, nw, nh, file.name || 'photo');
+    var page = JS.createPage(img, nw, nh, file.name || 'photo');
+    /* WHERE THIS PAGE CAME FROM, as metadata only - never the bytes, and never the
+       decoded image. `size` and `lastModified` are what let a later session recognise
+       the same file again after the user re-picks it: the name alone is not enough,
+       because two different receipts are routinely both called IMG_0421.JPG. The
+       browser gives no directory path for a plain file input, so there is none to
+       keep; see js/78-learn-recall.js. */
+    page.file = {
+      name: file.name || '',
+      size: file.size || 0,
+      lastModified: file.lastModified || 0
+    };
+    return page;
   }
 
   /* ------------------------------------------------------------- actions */
@@ -850,6 +1007,13 @@
     copy.coarse = src.coarse;
     copy.fine = src.fine;
     copy.corners = src.corners ? JS.cloneQuad(src.corners) : null;
+    // A duplicate is the same photograph under the same detector, so it inherits
+    // the provenance along with the corners. `quadAuto` is cloned rather than
+    // shared: rotating or re-running Auto crop on one of the two pages must not
+    // rewrite the other's record.
+    copy.cornersFrom = src.cornersFrom;
+    copy.quadAuto = src.quadAuto ? src.quadAuto.map(function (p) { return { x: p.x, y: p.y }; }) : null;
+    copy.autoRan = src.autoRan;
     copy.mode = src.mode;
     copy.modeTap = '';          // a copy starts with no chip of its own lit by hand
     copy.modeBack = null;
@@ -931,6 +1095,13 @@
     page.coarse = 0;
     page.fine = 0;
     page.corners = null;
+    /* A full reset, so the record of how the crop got here goes too. This is the
+       difference between "the user is looking at a refusal" and "the user undid
+       everything including the crop" - keeping `autoRan` would report the second
+       as the first. */
+    page.cornersFrom = '';
+    page.quadAuto = null;
+    page.autoRan = false;
     page.mode = 'original';
     page.modeTap = '';
     page.modeBack = null;
@@ -1258,14 +1429,14 @@
     JS.$('btn-rot-l').addEventListener('click', function () { JS.rotateActive(-1); });
     JS.$('btn-rot-r').addEventListener('click', function () { JS.rotateActive(1); });
 
-    // The crop handles. Each corner owns its own pointerdown, so which handle was
-    // grabbed needs no hit-testing; the moves come back to the layer because the
-    // drag captures the pointer there, which is also what lets a finger leave the
-    // stage — or the window — mid-drag and still land the corner it was on.
+    // The crop handles. ONE pointerdown for all eight, which then decides for itself
+    // which of them the finger meant (see `hitHandle`) — the per-handle listeners this
+    // replaces handed that decision to SVG's paint order, which is what made the
+    // top-right corner unusable on a short page. The moves come back to the layer
+    // because the drag captures the pointer there, which is also what lets a finger
+    // leave the stage — or the window — mid-drag and still land the corner it was on.
     var cropLayer = JS.$('crop-layer');
-    Array.prototype.forEach.call(handleNodes(), function (node, k) {
-      node.addEventListener('pointerdown', function (e) { startCropDrag(e, k); });
-    });
+    cropLayer.addEventListener('pointerdown', function (e) { startCropDrag(e, hitHandle(e)); });
     cropLayer.addEventListener('pointermove', moveCropDrag);
     cropLayer.addEventListener('pointerup', endCropDrag);
     cropLayer.addEventListener('pointercancel', endCropDrag);
