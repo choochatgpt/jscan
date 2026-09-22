@@ -450,8 +450,14 @@
       /* A mask restored from last session (js/78-learn-recall.js) is picked up here,
          and only here — it lives on the page so that closing Learn and opening it again
          shows it still painted. Otherwise every open starts clean, which is what a
-         fresh import wants and what the rest of this function assumes. */
-      mask: page.mask || JS.learnMask.create(),
+         fresh import wants and what the rest of this function assumes.
+
+         The page's own slot is FILLED, not just read. Everything below paints into
+         `state.mask` by reference, so without this the covering existed only in this
+         module: it survived nothing. Closing Learn and opening it again showed a blank
+         page, and `JS.recall.snapshot()` reads `page.mask`, so the brushwork was the one
+         thing the last-selection record could never save. */
+      mask: page.mask || (page.mask = JS.learnMask.create()),
       declaredNothing: false,
       busy: false
     };
@@ -485,8 +491,13 @@
 
   /** Put a saved comment back into the two fields. Used by the restore path. */
   function setComment(c) {
-    if (!els || !c) return;
+    if (!c) return;
+    // BUILT FIRST. The overlay does not exist until something asks for it, and on the
+    // page that has just restored a selection nothing has yet - so checking `els` before
+    // building threw the comment away silently, and the client's own words were gone by
+    // the time he next pressed Learn.
     build();
+    if (!els) return;
     if (typeof c.preset === 'string') els.noteSel.value = c.preset;
     if (typeof c.note === 'string') els.noteTxt.value = c.note;
     prevPresetId = els.noteSel.value;
