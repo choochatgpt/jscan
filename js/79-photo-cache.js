@@ -130,6 +130,29 @@
   var shownBytes = 0;
   var lastSig = null;       // what the store is already holding; see `save`
 
+  /* WHOSE QUESTION IS IT (v1.13.0).
+   *
+   * The client, on v1.12.0: "the pop up for restoring the selection keep popping up even when
+   * i select from fresh, like if i just clear and select 5 new photos, it will then next show
+   * me that it can restore the 5 new photos. But i just selected it! it is should only ask me
+   * when it started loading first time when app runs to see the cache has any photo to be
+   * loaded by user or not."
+   *
+   * An OFFER is the banner asking a question — "Load my last N photos?", with "Not now" beside
+   * it. It has exactly one legitimate moment: the app has just started, nothing is open, and
+   * there is something on the phone to offer. Everything else this module can be doing is the
+   * RESULT of something he did, and answering his own fresh pick with "shall I load the
+   * photographs you just picked?" is the whole of the complaint above.
+   *
+   * So an offer is only ever raised from the launch read in `boot()`, only while nothing has
+   * arrived yet, and only once per page — `userLoaded` is what "nothing has arrived yet"
+   * means, and it is set by the two doors photographs actually come through (his import and a
+   * restore). A reload is a fresh start and does offer again, which is what his sentence asks
+   * for; a session flag suppressing that would hide the feature on the one occasion he wants
+   * it. */
+  var userLoaded = false;   // photographs have arrived in THIS page's life, by his action
+  var offered = false;      // the question has been put on screen, once
+
   /* ------------------------------------------------------------------- storage */
 
   function supported() {
@@ -478,6 +501,9 @@
     if (!supported()) return Promise.resolve({ ok: false, reason: 'unsupported' });
     busy = true;
     loading = true;
+    /* Photographs are about to be in the app by his own tap. The import that follows comes
+       through `onFilesAdded` with `loading` set, so it returns before it can say so itself. */
+    userLoaded = true;
     return readRecord().then(function (rec) {
       if (!rec) {
         // Nothing in the store: whatever `lastSig` believed is no longer true of it.
@@ -718,6 +744,14 @@
     return '';
   }
 
+  /* ASK. The only caller is the launch read in `boot()`, and it refuses to ask twice or to
+     ask at all once photographs are in the app — see `userLoaded` above. */
+  function offer(rec) {
+    if (!rec || offered || userLoaded) return false;
+    offered = true;
+    return paint(rec, false);
+  }
+
   /* The offer, or the report. `report` swaps the buttons for a single OK. */
   function paint(rec, asReport) {
     build();
@@ -822,6 +856,9 @@
   function onFilesAdded() {
     if (loading) return Promise.resolve(null);
     if (!supported()) return Promise.resolve(null);
+    /* HE HAS PHOTOGRAPHS IN THE APP. Whatever this call goes on to paint, it can no longer be
+       the offer — the thing an offer would offer is already on screen, in front of him. */
+    userLoaded = true;
     if (els) notice = '';
     return save().then(function (r) {
       if (!r.ok) {
@@ -836,11 +873,17 @@
       }
       if (JS.recall.mute) JS.recall.mute(true);
       var n = r.photos;
+      /* THE REPORT, and the sentence says WHEN the tap he is being promised will exist: on
+         the next launch, when there is something to bring back and nothing already open. It
+         used to say "One tap brings them back" beside a live button offering to load the very
+         photographs he had just picked. */
       notice = 'Saved on this phone: ' + n + ' photo' + (n === 1 ? '' : 's') + ', ' +
-        fmtBytes(r.bytes) + '. One tap brings them back with your crops, tone and covering ' +
-        '— no picker.';
+        fmtBytes(r.bytes) + '. Next time you open the app, one tap brings them back with ' +
+        'your crops, tone and covering — no picker.';
       return readRecord().then(function (rec) {
-        if (rec) paint(rec, false);
+        /* paintOutcome, NOT paint(rec, false): a report of what just happened, with OK and
+           Forget under it, and no second way to load what is already open. */
+        if (rec) paintOutcome(rec, notice);
         return r;
       }, function () { return r; });
     }, function () { return { ok: false, reason: 'failed' }; });
@@ -879,7 +922,9 @@
     /* The offer is painted only when there is something to offer, and it is painted AFTER
        the record has been read — so the banner never appears saying "no photos saved" and
        then corrects itself a moment later. `persisted()` is asked at the same time, so the
-       sentence about whether Android will keep it is the browser's answer and not a guess. */
+       sentence about whether Android will keep it is the browser's answer and not a guess.
+       This is the ONE legitimate moment for the question, and `offer` is the only way to
+       raise it; everything else in this file reports. */
     readRecord().then(function (rec) {
       lastSig = null;   // nothing is known to be held until a read says so
       if (!rec) return null;
@@ -888,7 +933,10 @@
         // answer: they all cost a picker, and the folder one cannot work at all on a photo
         // he chose from his album (see this file's header).
         if (JS.recall.mute) JS.recall.mute(true);
-        return paint(rec, false);
+        // The read is asynchronous and he may have picked photographs while it was in
+        // flight, in which case the question is stale before it is asked: report instead.
+        if (userLoaded) return paint(rec, true);
+        return offer(rec);
       });
     }, function () { /* no IndexedDB here: the folder route is still on offer */ });
   }
@@ -910,6 +958,9 @@
     isQuota: isQuota, persistNow: persistNow,
     currentPersist: function () { return persistState; },
     currentNotice: currentNotice, paint: paint, report: report,
+    /* The gate itself, so a test can ask it rather than infer it from a button label. */
+    currentOffer: function () { return offered; },
+    anythingLoaded: function () { return userLoaded; },
     boot: boot, hide: hide, shownBytes: function () { return shownBytes; }
   };
 })(typeof window !== 'undefined' ? window : globalThis);

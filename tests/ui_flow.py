@@ -1394,20 +1394,55 @@ def main():
         pv = crop["prev"]
         dx, dy = 40.0, 70.0
         h0 = crop["hs"][0]
+        # THE PICTURE ITSELF, held as bytes. The client's specification is that dragging a
+        # handle moves the DOT and lets go to move the CROP: "when i click onto, say circle
+        # at the top right and drag it, the app should let me position the white dot onto
+        # the desired corner of the photo where i dragged the white dot to be. and when i
+        # let go, it should then crop that edge/corner to that new white dot position."
+        #
+        # Nothing about the box can establish that. v1.12.0 held the box still - `cropPin`
+        # was working - and re-warped the photograph INSIDE it on every move, because
+        # `moveCropDrag` wrote `page.corners`, invalidated and re-rendered each time. So
+        # the check is on the rendered canvas: byte-identical after eight moves means the
+        # photograph did not move under the finger, and different after the release means
+        # the crop is what caught up. The snapshot is taken AFTER the grab has rendered the
+        # frozen frame, so the comparison starts from the frame the finger is actually on.
+        page.evaluate("window.__shot = () => JS.$('preview').toDataURL()")
         page.mouse.move(h0["cx"], h0["cy"])
         page.mouse.down()
+        page.wait_for_timeout(250)
+        page.evaluate("window.__shot0 = window.__shot()")
         page.mouse.move(h0["cx"] + dx, h0["cy"] + dy, steps=8)
         page.wait_for_timeout(200)
         during = page.evaluate(CROP_JS)
+        held = page.evaluate("window.__shot() === window.__shot0")
         page.mouse.up()
         page.wait_for_timeout(250)
         after = page.evaluate(CROP_JS)
+        moved = page.evaluate("window.__shot() !== window.__shot0")
         want_x, want_y = dx / pv["w"], dy / pv["h"]
         rep.check("dragging a corner puts it where the finger went",
                   abs(after["corners"][0][0] - want_x) < 0.002
                   and abs(after["corners"][0][1] - want_y) < 0.002,
                   "corner %.5f,%.5f want %.5f,%.5f"
                   % (after["corners"][0][0], after["corners"][0][1], want_x, want_y))
+        rep.check("the photograph does not move while the finger is down",
+                  held, "the rendered page changed during the drag")
+        # And the half of the specification that was already true, kept true: "the app
+        # should let me position the white dot onto the desired corner of the photo where
+        # i dragged the white dot to be" — the dot is ON the finger, not on the crop.
+        rep.check("the dot under the finger travels with it",
+                  abs(during["hs"][0]["cx"] - (h0["cx"] + dx)) < 1.5
+                  and abs(during["hs"][0]["cy"] - (h0["cy"] + dy)) < 1.5,
+                  "dot %.1f,%.1f, finger %.1f,%.1f"
+                  % (during["hs"][0]["cx"], during["hs"][0]["cy"],
+                     h0["cx"] + dx, h0["cy"] + dy))
+        rep.check("and the crop is not written until the finger comes up",
+                  during["corners"] == crop["corners"],
+                  "quad during %s against %s before the drag"
+                  % (during["corners"], crop["corners"]))
+        rep.check("letting go is what crops it", moved,
+                  "the rendered page is unchanged after the release")
         # The handles ride the corners of the box, so a box that resized itself
         # mid-drag would move the finger's own target. The pin is what stops it,
         # and it has to be up only for the length of the drag.
@@ -1446,11 +1481,19 @@ def main():
         sdx, sdy = 30.0, 40.0
         page.mouse.move(h1["cx"], h1["cy"])
         page.mouse.down()
+        page.wait_for_timeout(200)
+        page.evaluate("window.__shot0 = window.__shot()")
         page.mouse.move(h1["cx"] + sdx, h1["cy"] + sdy, steps=8)
         page.wait_for_timeout(150)
+        held_side = page.evaluate("window.__shot() === window.__shot0")
         page.mouse.up()
         page.wait_for_timeout(250)
         sd = page.evaluate(CROP_JS)["corners"]
+        # A side is the odd branch of the same code, so the same two claims are made on
+        # it: the picture is held while the finger travels, and what moves on release is
+        # the crop. (The dots moving is what `draggedPts` does on both branches.)
+        rep.check("a side drag holds the photograph still while the finger travels",
+                  held_side, "the rendered page changed during the side drag")
         want_du, want_dv = 0.8 * sdx / pv2["w"], 0.8 * sdy / pv2["h"]
         rep.check("dragging a side moves both of its corners by the finger's own offset",
                   abs(sd[0][0] - (0.1 + want_du)) < 0.003
@@ -1791,9 +1834,17 @@ def main():
         zoomed_w = page.evaluate("JS.$('preview').getBoundingClientRect().width")
         page.mouse.move(h["cx"] + 40, h["cy"] + 60, steps=8)
         page.wait_for_timeout(120)
-        moved = page.evaluate("JS.getCorners(JS.activePage())[0]")
+        # While the finger is down the crop has not moved — that is the whole point of the
+        # two-phase drag — so the reading that is compared with the finger is the one taken
+        # after the release. What is read here is the opposite claim: the drag left the
+        # photograph alone until the finger came up.
+        during_zoom = page.evaluate("JS.getCorners(JS.activePage())[0]")
         page.mouse.up()
         page.wait_for_timeout(200)
+        moved = page.evaluate("JS.getCorners(JS.activePage())[0]")
+        rep.check("and the drag does not move the corner until the finger comes up",
+                  during_zoom["x"] == 0 and during_zoom["y"] == 0,
+                  "corner %s during the drag" % (during_zoom,))
         want_u = 40.0 / zoomed_w
         want_v = 60.0 / (zoomed_w * c["prev"]["h"] / c["prev"]["w"])
         rep.check("a drag while zoomed still tracks the finger one-for-one",

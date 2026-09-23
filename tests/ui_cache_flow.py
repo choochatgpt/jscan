@@ -260,7 +260,7 @@ def main():
                       bool(rec) and rec["sizes"] == [os.path.getsize(p) for p in photos], rec)
             rep.check("and with the crop, tone and comment already in it",
                       bool(rec) and rec["coarse"] == 90 and rec["comment"] == want_comment, rec)
-            rep.check("a record that says which build wrote it", bool(rec) and rec["version"] == "1.12.0", rec)
+            rep.check("a record that says which build wrote it", bool(rec) and rec["version"] == "1.13.0", rec)
 
             banner_a = a.evaluate(BANNER)
             print("        A banner: %r" % banner_a)
@@ -407,6 +407,75 @@ def main():
                       c.evaluate(BANNER))
             rep.check("and still opens no picker of its own",
                       c.evaluate("window.__pickers.input + window.__pickers.dir + window.__pickers.files") == 0)
+
+            # ------------------------------------------------- WHEN the offer may be made
+            #
+            # The client, on the shipped v1.12.0: "the pop up for restoring the selection keep
+            # popping up even when i select from fresh, like if i just clear and select 5 new
+            # photos, it will then next show me that it can restore the 5 new photos. But i
+            # just selected it! it is should only ask me when it started loading first time
+            # when app runs to see the cache has any photo to be loaded by user or not."
+            #
+            # The offer is the banner with a "Load my last N photos" button on it, so the
+            # reading is a string check on the banner at each step of his own sequence — and
+            # the sequence is replayed here exactly as he described it.
+            print("\nsession D — the offer may only be made at the start")
+            d = ctx.new_page()
+            note(d, "D")
+            d.on("dialog", lambda dlg: dlg.accept())      # the Clear button asks first
+            d.goto(url)
+            d.wait_for_function("!!window.JS && !!JS.app && !!JS.photoCache")
+            d.wait_for_timeout(300)
+            fresh = [
+                make_photo(os.path.join(TMP, "cache_d1.jpg")),
+                make_photo(os.path.join(TMP, "cache_d2.jpg")),
+                make_photo(os.path.join(TMP, "cache_d3.jpg")),
+            ]
+            d.set_input_files("#file-gallery", fresh)
+            d.wait_for_function("JS.app.pages.length === 3")
+            d.wait_for_timeout(600)
+            banner_d1 = d.evaluate(BANNER)
+            print("        D, right after his own pick: %r" % banner_d1)
+            rep.check("picking photographs himself does NOT produce the offer",
+                      banner_d1 is not None and "Load my last" not in banner_d1, banner_d1)
+            rep.check("it is a report of what was just saved",
+                      banner_d1 is not None and "saved on this phone" in banner_d1, banner_d1)
+            rep.check("and it is still the sentence that says nothing was uploaded",
+                      banner_d1 is not None and "not uploaded anywhere" in banner_d1, banner_d1)
+
+            d.click("#btn-clear")
+            d.wait_for_function("JS.app.pages.length === 0")
+            d.wait_for_timeout(300)
+            banner_d2 = d.evaluate(BANNER)
+            print("        D, after Clear: %r" % banner_d2)
+            rep.check("clearing the grid does not turn the report into an offer",
+                      banner_d2 is not None and "Load my last" not in banner_d2, banner_d2)
+
+            five = [make_photo(os.path.join(TMP, "cache_e%d.jpg" % i)) for i in range(3)]
+            d.set_input_files("#file-gallery", five)
+            d.wait_for_function("JS.app.pages.length === 3")
+            d.wait_for_timeout(700)
+            banner_d3 = d.evaluate(BANNER)
+            print("        D, after clearing and picking three fresh ones: %r" % banner_d3)
+            rep.check("and three fresh photographs after a clear are NOT offered back",
+                      banner_d3 is not None and "Load my last" not in banner_d3, banner_d3)
+            rep.check("the cache really does hold them, so the offer was withheld and not lost",
+                      d.evaluate("JS.photoCache.hasSaved()") is True)
+            rep.check("and the module never asked the question in this session",
+                      d.evaluate("JS.photoCache.currentOffer()") is False)
+
+            # The other half, so the check above cannot be satisfied by simply never offering:
+            # a real relaunch, with nothing open, is where he asked for it.
+            rel = ctx.new_page()
+            note(rel, "E")
+            rel.goto(url)
+            rel.wait_for_function("!!window.JS && !!JS.app && !!JS.photoCache")
+            rel.wait_for_timeout(700)
+            banner_e = rel.evaluate(BANNER)
+            print("        E, a real relaunch: %r" % banner_e)
+            rep.check("a fresh launch DOES offer, with the count and a way to decline",
+                      banner_e is not None and "Load my last 3 photos" in banner_e
+                      and "Not now" in banner_e, banner_e)
 
             print("\nno errors")
             real = [e for e in errors if "favicon" not in e.lower()]

@@ -287,7 +287,7 @@ function makeWorld(opts) {
   sandbox.createImageBitmap = win.createImageBitmap;
   win.JS = {};
   win.JS.$ = dom.$;
-  win.JS.VERSION = '1.12.0';
+  win.JS.VERSION = '1.13.0';
 
   const load = (f) => vm.runInContext(
     fs.readFileSync(path.join(REPO_ROOT, 'js', f), 'utf8'), sandbox, { filename: f });
@@ -528,7 +528,7 @@ console.log('\njs/79-photo-cache.js — ONE TAP AT START, NO PICKER');
   eq(rec.items[0].name, 'photo-1.jpg', 'under the name the page was given');
   eq(rec.items[0].size, 1000, 'with the ORIGINAL file size, not the cached byte count');
   eq(typeof rec.items[0].state.corners, 'object', 'and the crop quad beside the bytes');
-  eq(rec.app_version, '1.12.0', 'and the version that wrote it');
+  eq(rec.app_version, '1.13.0', 'and the version that wrote it');
 
   /* ---- RELAUNCH: a new page, a new world, the same phone storage. */
   const W2 = makeWorld({ store: { idb: W.idb, st: W.st }, ls: W.ls });
@@ -603,6 +603,80 @@ console.log('\njs/79-photo-cache.js — ONE TAP AT START, NO PICKER');
   eq(recallRec.pages[0].coarse, 90,
      'and the metadata record describes the EDITED pages, not the bare decode');
   eq(W2.RC.hasSaved(), true, 'so the metadata route still has a usable record');
+}
+
+/* ============================================================================ */
+console.log('\njs/79-photo-cache.js — the banner only ASKS at the start');
+
+{
+  /* The client, on v1.12.0: "the pop up for restoring the selection keep popping up even when
+     i select from fresh, like if i just clear and select 5 new photos, it will then next show
+     me that it can restore the 5 new photos. But i just selected it! it is should only ask me
+     when it started loading first time when app runs to see the cache has any photo to be
+     loaded by user or not."
+
+     An offer is a specific visible thing: a button labelled "Load my last N photos" with "Not
+     now" beside it. So every check here reads that button, and the gate itself twice over. */
+  const bannerOf = (w) => w.dom.byId['view-home'].children.find((c) => c.id === 'cache-banner');
+  const offers = (w) => {
+    const b = bannerOf(w);
+    return !!b && buttons(b).some((x) => /^Load my last /.test(x.textContent));
+  };
+
+  const W = makeWorld();
+  await firstSession(W, 5);
+  await wait(5);          // the import's own save paints the banner; let it land
+  eq(W.JS.app.pages.length, 5, 'he picked five photographs');
+  eq(W.PC.anythingLoaded(), true, 'the module knows photographs are in the app');
+  eq(W.PC.currentOffer(), false, 'and it has not asked him anything');
+  eq(offers(W), false,
+     'so the banner he just got is a REPORT of his own pick, not an offer to load it back');
+  has(allText(bannerOf(W)), 'saved on this phone', 'which still says where they are');
+  has(allText(bannerOf(W)), 'not uploaded anywhere', 'and still says they are not uploaded');
+  has(allText(bannerOf(W)), 'Next time you open the app',
+      'and says when the tap it promises will exist, now that the button is not on screen');
+
+  /* CLEAR, THEN PICK FIVE FRESH ONES — the client's exact sequence. Clearing the grid takes
+     the pages away and leaves the cache alone, so at the moment of the second pick there IS
+     something to offer, and the app must still not offer it. */
+  W.JS.app.pages.length = 0;
+  await W.JS.addFiles([photo('fresh-1.jpg', 1200), photo('fresh-2.jpg', 1200)]);
+  await wait(5);
+  eq(W.JS.app.pages.length, 2, 'he cleared the grid and picked two more in the same session');
+  eq(offers(W), false, 'and there is STILL no offer, for photographs he just chose');
+
+  /* A RELAUNCH IS THE ONE PLACE THE QUESTION BELONGS. Nothing is open — the app has just
+     started — which is exactly "when it started loading first time when app runs". */
+  const W2 = makeWorld({ store: { idb: W.idb, st: W.st }, ls: W.ls });
+  await wait(); await wait();
+  eq(W2.JS.app.pages.length, 0, 'a fresh launch opens with nothing in it');
+  eq(offers(W2), true, 'and THAT is where the offer is made');
+  eq(W2.PC.currentOffer(), true, 'once');
+  eq(!!byText(bannerOf(W2), 'Load my last 2 photos'), true,
+     'for exactly the photographs the phone is holding');
+
+  /* And the moment he picks anything himself, it stops being an offer — in this session, on
+     the same page, with no reload in between. */
+  await W2.JS.addFiles([photo('his-own.jpg', 1300), photo('his-own-2.jpg', 1300)]);
+  await wait(5);
+  eq(W2.PC.anythingLoaded(), true, 'he picked two photographs himself');
+  eq(offers(W2), false, 'so the question is gone rather than re-asked');
+
+  /* Taking the offer is the other door photographs come in through, and it closes the same
+     way: one import later, no offer for what he is looking at. */
+  const W3 = makeWorld({ store: { idb: W2.idb, st: W2.st }, ls: W2.ls });
+  await wait(); await wait();
+  const offer3 = byText(bannerOf(W3), 'Load my last 2 photos');
+  ok(!!offer3, 'the next launch offers the two that are on the phone');
+  offer3.click();
+  for (let i = 0; i < 40 && W3.JS.app.pages.length === 0; i++) await wait(5);
+  await wait(10);
+  eq(W3.JS.app.pages.length, 2, 'and the tap brought them back');
+  eq(offers(W3), false, 'with no offer left for the photographs now open');
+  await W3.JS.addFiles([photo('one-more.jpg', 1400)]);
+  await wait(5);
+  eq(W3.PC.anythingLoaded(), true, 'one more picked by hand');
+  eq(offers(W3), false, 'and picking it does not bring the question back');
 }
 
 /* ============================================================================ */

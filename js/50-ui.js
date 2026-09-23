@@ -491,12 +491,14 @@
    *   side drag   -> the side is at the finger and both of its corners travel with it
    *                  by the same screen offset
    *
-   * `finger` is the pointer's own place on the photo (clamped to it), NOT the corner
-   * the quad ended up on. Following the quad would make the dot lag the finger by
-   * exactly the amount a clamp or a refusal cost, which reads as the handle slipping.
-   * A refused move does not update the dot at all — the crop has stopped, so the dot
-   * stops with it rather than sailing on alone. When the finger lifts, `endCropDrag`
-   * drops the override and refits the frame, so the dots land on the real crop again.
+   * `finger` is the pointer's own place on the photo, NOT the corner the quad ended up
+   * on. Following the quad would make the dot lag the finger by exactly the amount a
+   * clamp or a refusal cost, which reads as the handle slipping — and it may leave the
+   * frozen frame entirely, which is deliberate: the whole point of the drag is to put
+   * the dot somewhere the crop is not yet, including outside it (`moveCropDrag` carries
+   * only the dot, and the crop catches up when the finger lifts). When the finger lifts,
+   * `endCropDrag` drops the override and refits the frame, so the dots land on the real
+   * crop again — that refit IS the snap the client asked for.
    */
   function draggedPts(fit, handle, finger) {
     var box = boxPts(fit);
@@ -628,7 +630,11 @@
                  side: (i % 2) ? (i - 1) / 2 : -1,
                  start: JS.getCorners(page).map(function (p) { return { x: p.x, y: p.y }; }),
                  anchor: (i % 2) ? mapper(h.fx, h.fy) : null,
-                 mapper: mapper, fit: f, view: zoomed, back: view };
+                 mapper: mapper, fit: f, view: zoomed, back: view,
+                 // The quad the finger has asked for so far, applied on release and not
+                 // before. Null means "nothing accepted yet", which is the state a tap
+                 // that never moved lives and dies in. See `moveCropDrag`.
+                 pending: null };
     // The view is frozen for the whole drag: a corner moving at twice the
     // finger's speed because the page under it is magnified is a crop you can
     // aim, and a view that chased the handle would be a map redrawn while it is
@@ -647,30 +653,57 @@
     e.preventDefault();
   }
 
+  /* MOVING THE DOT IS ALL THIS DOES (v1.13.0).
+   *
+   * The client's specification: "when i click onto, say circle at the top right and drag it,
+   * the app should let me position the white dot onto the desired corner of the photo where i
+   * dragged the white dot to be. and when i let go, it should then crop that edge/corner to
+   * that new white dot position".
+   *
+   * Three things follow, and this function used to do the opposite of all three:
+   *
+   *   - the DOT travels with the finger, on every move, whether or not the crop could follow.
+   *     It is the finger's own place on the frozen frame, not the place the quad ended up.
+   *   - the PHOTOGRAPH does not move. v1.12.0 wrote `page.corners`, invalidated and re-rendered
+   *     on every single move, so the printed content re-warped under the finger: measured on
+   *     a long receipt rectified to a wide short page, the picture slid 176px across the
+   *     screen with the finger held down, and the crop boundary was re-written on 8 of 8
+   *     moves. That IS the crop fighting the finger.
+   *   - the CROP changes once, when the finger lifts. `cropDrag.pending` holds the newest quad
+   *     the geometry accepted; `endCropDrag` applies it in one write and re-renders once.
+   *
+   * The frame the finger is measured in is the frozen one — `cropDrag.fit`, the box as it was
+   * when the handle was taken hold of — and the zoom is the drag's own frozen zoom, because
+   * those are the numbers the drag's map was built from.
+   *
+   * The finger is deliberately NOT clamped to that frame. A dot that cannot leave the current
+   * crop can only ever crop less: with the dot stuck inside the box, a corner that Auto left
+   * over-cropped could be pulled in but never back out onto the rest of the sheet, so
+   * "edges under-cropped" was unfixable by hand. The dot goes where the finger went; the
+   * PHOTO point it maps to is clamped to the photo itself, because a corner outside the
+   * picture is not a crop and `JS.quadOk` refuses it.
+   */
   function moveCropDrag(e) {
     if (!cropDrag) return;
     var layer = JS.$('crop-layer');
     if (!layer.getBoundingClientRect) return;
     var r = layer.getBoundingClientRect();
     var f = cropDrag.fit;
-    // Where on the finished page the finger is, 0..1 across and down. Clamped
-    // first, so the corner cannot leave the photo.
-    //
     // The stage contents are under a transform, so the layer's own rect is the
     // *scaled* box and `clientX - r.left` is a screen distance. Dividing by the
-    // zoom turns it back into the stage coordinates that `f` is measured in —
-    // and it has to be the drag's own frozen zoom, not whatever the view is now,
-    // because those are the numbers the drag's map was built from.
+    // zoom turns it back into the stage coordinates that `f` is measured in.
     var z = cropDrag.view.z;
-    var u = JS.clamp(((e.clientX - r.left) / z - f.x) / f.w, 0, 1);
-    var v = JS.clamp(((e.clientY - r.top) / z - f.y) / f.h, 0, 1);
+    var u = ((e.clientX - r.left) / z - f.x) / f.w;
+    var v = ((e.clientY - r.top) / z - f.y) / f.h;
     var q = cropDrag.mapper(u, v);
     if (!q) return;
-    var page = cropDrag.page;
     var next;
     if (cropDrag.corner >= 0) {
-      next = JS.getCorners(page).map(function (p) { return { x: p.x, y: p.y }; });
-      next[cropDrag.corner] = q;
+      // From the drag's own start, never from the page: the page still holds the crop
+      // as it was when the handle was grabbed (nothing here writes it), so reading it
+      // back would be reading `start` with more steps in between.
+      next = cropDrag.start.map(function (p) { return { x: p.x, y: p.y }; });
+      next[cropDrag.corner] = { x: JS.clamp(q.x, 0, 1), y: JS.clamp(q.y, 0, 1) };
     } else {
       // A side handle moves its two corners together, by however far the finger
       // has travelled from where the side's midpoint started. Taking the corners
@@ -678,7 +711,8 @@
       // keeps the pair rigid: measured against a quad that the previous move
       // already shifted, the second corner would be given the delta twice and
       // the side would stretch away from the finger.
-      var dx = q.x - cropDrag.anchor.x, dy = q.y - cropDrag.anchor.y;
+      var dx = JS.clamp(q.x, 0, 1) - cropDrag.anchor.x;
+      var dy = JS.clamp(q.y, 0, 1) - cropDrag.anchor.y;
       var a = cropDrag.side, b = (a + 1) % 4;
       // The finger is clamped to the photo, but the offset it produced is not:
       // the side it is dragging runs along the same edge, so pushing it *down*
@@ -697,33 +731,34 @@
       next[a].x += dx; next[a].y += dy;
       next[b].x += dx; next[b].y += dy;
     }
+    // The dot, first and unconditionally: it is the finger's own place, and the drag is
+    // the act of putting it where the corner should be. Whether the crop can follow is a
+    // separate question, answered below.
+    cropDrag.dot = { handle: cropDrag.handle, x: f.x + u * f.w, y: f.y + v * f.h };
     // Past its neighbour the quad crosses, and inside their triangle it folds
     // the page over itself; onto its neighbour it collapses to a sliver. All
     // three would render something that is not the crop the finger asked for,
     // so the last good quad stays and the corner stops there. See `JS.quadOk`.
     // For a side this is also what stops the edge being pushed out through the
     // far one and turning the page inside out.
-    if (!JS.quadOk(next)) return;
-    page.corners = next;
-    // THE manual write. `JS.autoDetect` is the only other thing that ever sets
-    // `corners`, and it stamps 'auto'; everything downstream of this line (the
-    // Learn manifest's refused / corrected / refused_then_corrected) is decided
-    // by which of the two wrote last. A drag that `quadOk` refused returns above
-    // and correctly leaves the provenance alone - the finger moved, the crop did
-    // not, so nothing was corrected.
-    page.cornersFrom = 'manual';
-    // The finger's own place on the photo, in the FROZEN frame's coordinates, so the
-    // grabbed dot travels with it instead of staying on a box that is being held still.
-    // Set only here, on the accepted path: a move that `quadOk` refused changed nothing,
-    // and a dot that ran on would leave the handle describing a crop that is not there.
-    cropDrag.dot = { handle: cropDrag.handle, x: f.x + u * f.w, y: f.y + v * f.h };
-    JS.invalidate(page);
-    scheduleRender(true);
+    if (JS.quadOk(next)) cropDrag.pending = next;
+    // And the dots move. Nothing else does: no invalidate, no render, no write to the page —
+    // so the picture under them is the same picture it was when the finger went down.
+    placeHandles(cropDrag.page, f);
   }
 
+  /* LET GO, AND THE CROP CATCHES UP.
+   *
+   * One write, one invalidation, one render — the "when i let go, it should then crop that
+   * edge/corner to that new white dot position". `pending` is the newest quad the geometry
+   * accepted, so a drag that ran into a fold or through the far corner crops to the last
+   * legal place rather than to the illegal one; a drag that never moved (a tap on a handle)
+   * has no pending and changes nothing at all.
+   */
   function endCropDrag() {
     if (!cropDrag) return;
     var page = cropDrag.page;
+    var pending = cropDrag.pending;
     // Back to the view the corner was grabbed from. The zoom was a way of aiming
     // at one dot, and holding it after the dot has been placed would leave the
     // user looking at a corner with no idea how they got there — and with no
@@ -731,6 +766,16 @@
     view = cropDrag.back;
     cropDrag = null;
     JS.cropPin = 0;
+    if (pending) {
+      page.corners = pending;
+      // THE manual write. `JS.autoDetect` is the only other thing that ever sets
+      // `corners`, and it stamps 'auto'; everything downstream of this line (the
+      // Learn manifest's refused / corrected / refused_then_corrected) is decided
+      // by which of the two wrote last. A drag that `quadOk` refused every move has
+      // no pending, leaves the provenance alone, and correctly says nothing was
+      // corrected — the finger moved, the crop did not.
+      page.cornersFrom = 'manual';
+    }
     page.touched = true;
     applyView();
     JS.invalidate(page);
